@@ -11,6 +11,7 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#include "importer/import.h"
 
 
 int main()
@@ -21,6 +22,13 @@ int main()
 #else
     const std::filesystem::path shaderDir("shaders");
 #endif
+
+#ifdef MODEL_DIR
+  const std::filesystem::path modelDir(MODEL_DIR);
+#else
+  const std::filesystem::path modelDir("models");
+#endif
+
     RHI rhi;
     if (!rhi.Initialize()) {
         std::cerr << "Failed to initialize RHI.\n";

@@ -36,7 +36,18 @@ if(WIN32)
     target_link_libraries(glfw PUBLIC gdi32 user32 shell32)
 endif()
 
-add_executable(new_renderer src/main.cpp)
+add_executable(new_renderer src/main.cpp src/importer/import.cpp)
+
+target_include_directories(new_renderer PRIVATE src)
+
+if(WIN32)
+    # Windows.h defines min/max macros that break standard headers
+    # (e.g. std::numeric_limits<>::max() inside fastgltf). Kill them.
+    target_compile_definitions(new_renderer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+endif()
+if(MSVC)
+    target_compile_options(new_renderer PRIVATE /EHsc)
+endif()
 
 target_link_libraries(new_renderer
     PRIVATE
@@ -61,3 +72,7 @@ endif()
 # RHI_SHADER_DIR, and stages dxcompiler next to the binary.
 rhi_add_shaders(new_renderer "${CMAKE_CURRENT_SOURCE_DIR}/shaders")
 copy_dxc_runtime(new_renderer)
+
+# Models are backend-agnostic, no transform needed: point at the source dir.
+target_compile_definitions(new_renderer
+    PRIVATE MODEL_DIR="${CMAKE_CURRENT_SOURCE_DIR}/models")
