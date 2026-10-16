@@ -131,6 +131,26 @@ int main()
 
     auto swapchain = rhi.CreateSwapchain(swapchainDesc);
 
+    ModelData model = loadModel(rhi, (modelDir / "sponza/Sponza.gltf").string());
+    std::cout << "model: " << model.primitivesList.size() << " submeshes, "
+              << model.drawables.size() << " drawables, "
+              << model.materials.size() << " materials, "
+              << model.textures.size() << " textures, "
+              << model.samplers.size() << " samplers\n";
+    std::cout << "buffers: vb=" << model.vertexBuffer.desc.size
+              << "B ib=" << model.indexBuffer.desc.size << "B\n";
+
+    bool modelOk = model.vertexBuffer.desc.size > 0 && model.indexBuffer.desc.size > 0
+        && !model.primitivesList.empty() && !model.drawables.empty();
+    for (const auto& d : model.drawables) {
+        if (d.submeshIdx >= model.primitivesList.size()) { modelOk = false; break; }
+        if (model.primitivesList[d.submeshIdx].materialIdx >= model.materials.size()) { modelOk = false; break; }
+    }
+    for (const auto& m : model.materials) {
+        if (m.albedoTextureIdx != 0xFFFFFFFF && m.albedoTextureIdx >= model.textures.size()) { modelOk = false; break; }
+    }
+    std::cout << "model " << (modelOk ? "OK" : "BROKEN") << "\n";
+
     while (!glfwWindowShouldClose(window)) {
         auto acquired = rhi.AcquireNextImage(swapchain);
 

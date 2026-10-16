@@ -170,7 +170,9 @@ ModelData loadModel(RHI& rhi, const std::string& path)
         rhi.UploadTexture(texture, 0, picture, (uint32_t)width, (uint32_t)height);
         stbi_image_free(picture);
 
-        textureViewList.push_back(rhi.CreateTextureView({}, texture));
+        rhi::TextureViewDesc viewDesc;
+        viewDesc.format = desc.format;
+        textureViewList.push_back(rhi.CreateTextureView(viewDesc, texture));
     }
 
     for (const auto& material : materials) {

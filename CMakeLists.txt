@@ -43,7 +43,8 @@ target_include_directories(new_renderer PRIVATE src)
 if(WIN32)
     # Windows.h defines min/max macros that break standard headers
     # (e.g. std::numeric_limits<>::max() inside fastgltf). Kill them.
-    target_compile_definitions(new_renderer PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+    # (No WIN32_LEAN_AND_MEAN: dxcapi.h needs the full COM declarations.)
+    target_compile_definitions(new_renderer PRIVATE NOMINMAX)
 endif()
 if(MSVC)
     target_compile_options(new_renderer PRIVATE /EHsc)
