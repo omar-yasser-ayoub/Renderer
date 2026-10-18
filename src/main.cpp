@@ -8,6 +8,7 @@
 #include "rhi/resources/renderpass.h"
 #include "rhi/resources/surface.h"
 #include "rhi/resources/swapchain.h"
+#include "rhi/resources/texture.h"
 #include "rhi/rhi.h"
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
@@ -71,15 +72,6 @@ int main()
     vertexDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
     vertexDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::CopyDst;
     vertexDesc.size = 60;
-
-    rhi::BufferHandle vb = rhi.CreateBuffer(vertexDesc);
-    float data[] = {
-      -0.5f, -0.5f, 0.0f,  0.0f, 0.0f,
-       0.5f, -0.5f, 0.0f,  1.0f, 0.0f,
-       0.0f,  0.5f, 0.0f,  0.5f, 1.0f,
-    };
-
-    rhi.WriteBuffer(vb, data, sizeof(data), 0);
 
     std::vector<rhi::ShaderReflection> reflections = {};
     reflections.push_back(vsModule->reflection);
@@ -328,6 +320,132 @@ int main()
         modelBindGroups.push_back(rhi.CreateBindGroup(modelBindGroupDesc));
     }
 
+    // compile the shadermodule for the shadow prepass vertex shader
+    rhi::ShaderSource prepassvsSource;
+
+    prepassvsSource.path = shaderDir / "shadow.vert.hlsl";
+    prepassvsSource.stage = rhi::ShaderStageFlags::Vertex;
+    prepassvsSource.entryPoint = "main";
+
+    const rhi::ShaderModuleHandle prepassvs = rhi.CompileShader(prepassvsSource);
+
+    //build the bind group layout for the shadow prepass
+    std::vector<rhi::ShaderReflection> prepassReflection;
+    prepassReflection.push_back(rhi.GetShaderModule(prepassvs)->reflection);
+    auto prepassBindGroupLayoutDescs = rhi::BuildBindGroupLayoutDescs(prepassReflection);
+
+    std::sort(prepassBindGroupLayoutDescs.begin(), prepassBindGroupLayoutDescs.end(),
+        [](const rhi::BindGroupLayoutDesc& a, const rhi::BindGroupLayoutDesc& b) {
+            return a.shaderBindings[0].set < b.shaderBindings[0].set;
+        });
+
+    std::vector<rhi::BindGroupLayoutHandle> prepassBindGroupLayouts;
+    rhi::PipelineLayoutDesc prepassLayoutDesc;
+
+    for (const auto &desc : prepassBindGroupLayoutDescs) {
+        rhi::BindGroupLayoutHandle handle = rhi.CreateBindGroupLayout(desc);
+        prepassBindGroupLayouts.push_back(handle);
+        prepassLayoutDesc.layouts.push_back(handle);
+    }
+
+    rhi::PipelineLayoutHandle prepassLayout = rhi.CreatePipelineLayout(prepassLayoutDesc);
+
+    // create the pipeline for the shadow prepass
+    rhi::GraphicsPipelineDesc shadowPrepassPipelineDesc;
+    shadowPrepassPipelineDesc.vertexShader = prepassvs;
+    shadowPrepassPipelineDesc.layout = prepassLayout;
+    shadowPrepassPipelineDesc.vertexBuffers.push_back({
+        .stride = 32,
+        .attributes = {
+            {.bufferSlot = 0, .location = 0, .format = rhi::VertexFormat::Float32x3, .offset = 0},  //pos
+        },
+    });
+    shadowPrepassPipelineDesc.depthStencil = {
+        .format = rhi::TextureFormat::Depth32Float,
+        .depthTestEnabled = true,
+        .depthWriteEnabled = true,
+        .depthFunc = rhi::CompareOp::Less,
+    };
+
+    auto shadowPrepassPipeline = rhi.CreateGraphicsPipeline(shadowPrepassPipelineDesc);
+
+    std::vector<ShadowPrepassUBO> shadowPrepassUbos;
+    std::vector<rhi::TextureViewHandle> shadowMapTextureViews;
+    std::vector<rhi::BindGroupHandle> shadowPrepassBindGroups;
+
+
+    for (size_t i = 0; i < lightData.lightCount; ++i) {
+        if (lightData.lights[i].posType.w == 0) {
+            // this is a directional light, we'll add it to the shadowprepassubos, and we should create a texture + view for it!
+            rhi::TextureDesc shadowMapDesc;
+            shadowMapDesc.format = rhi::TextureFormat::Depth32Float;
+            shadowMapDesc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::DepthStencil;
+            shadowMapDesc.dimension = rhi::TextureDimension::Tex2D;
+            shadowMapDesc.width = 1024;
+            shadowMapDesc.height = 1024;
+            shadowMapDesc.depth = 1;
+            shadowMapDesc.mipLevels = 1;
+            shadowMapDesc.arrayLayers = 1;
+
+            rhi::TextureHandle shadowMapTexture = rhi.CreateTexture(shadowMapDesc);
+
+            rhi::TextureViewDesc shadowMapViewDesc;
+            shadowMapViewDesc.dimension = rhi::TextureViewDimension::Tex2D;
+            shadowMapViewDesc.format = shadowMapDesc.format;
+            shadowMapViewDesc.aspect = rhi::TextureAspect::Depth;
+            shadowMapViewDesc.baseMipLevel = 0;
+            shadowMapViewDesc.baseArrayLayer = 0;
+            shadowMapViewDesc.mipLevels = 1;
+            shadowMapViewDesc.arrayLayers = 1;
+            shadowMapTextureViews.push_back(rhi.CreateTextureView(shadowMapViewDesc, shadowMapTexture));
+
+            const glm::vec3 lightDir = glm::normalize(glm::vec3(lightData.lights[i].dirRadius));
+            const glm::vec3 sceneCenter(0.0f, 0.0f, 0.0f);
+            const float sceneRadius = 40.0f;
+            const float lightDistance = 1000.0f;
+
+            const glm::vec3 lightPos = sceneCenter - lightDir * lightDistance;
+
+            glm::vec3 up(0.0f, 1.0f, 0.0f);
+            if (glm::abs(glm::dot(up, lightDir)) > 0.99f) {
+                up = glm::vec3(1.0f, 0.0f, 0.0f);
+            }
+
+            const glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, up);
+            const glm::mat4 lightProj = glm::orthoRH_ZO(
+                -sceneRadius, sceneRadius,
+                -sceneRadius, sceneRadius,
+                lightDistance - sceneRadius,
+                lightDistance + sceneRadius);
+
+            rhi::BufferDesc shadowPrepassBufferDesc;
+            shadowPrepassBufferDesc.size = sizeof(ShadowPrepassUBO);
+            shadowPrepassBufferDesc.usage = rhi::BufferUsage::Uniform;
+            shadowPrepassBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+            rhi::BufferHandle shadowPrepassBuffer = rhi.CreateBuffer(shadowPrepassBufferDesc);
+
+            ShadowPrepassUBO shadowPrepassData{};
+            shadowPrepassData.lightViewProjMatrix = lightProj * lightView;
+            rhi.WriteBuffer(shadowPrepassBuffer, &shadowPrepassData, sizeof(ShadowPrepassUBO));
+            shadowPrepassUbos.push_back(shadowPrepassData);
+
+            // Create the bind group for the shadow prepass
+            rhi::BindGroupDesc shadowPrepassBindGroupDesc;
+            rhi::BindGroupEntry shadowPrepassEntry;
+            shadowPrepassEntry.binding = 0;
+            shadowPrepassEntry.buffer = shadowPrepassBuffer;
+            shadowPrepassBindGroupDesc.entries.push_back(shadowPrepassEntry);
+            shadowPrepassBindGroupDesc.layout = prepassBindGroupLayouts[0];
+            shadowPrepassBindGroups.push_back(rhi.CreateBindGroup(shadowPrepassBindGroupDesc));
+        }
+    }
+
+
+
+    // we also want to create the appropriate bind group for the depth prepass.
+    rhi::BindGroupDesc depthBindGroupDesc;
+
+
     while (!glfwWindowShouldClose(window)) {
         auto acquired = rhi.AcquireNextImage(swapchain);
 
@@ -339,19 +457,40 @@ int main()
 
         auto cmd = rhi.BeginCommandList();
 
-        rhi::RenderPassDesc pass{};
-        pass.swapchain = swapchain;
-        pass.imageIndex = acquired.imageIndex;
-        pass.colors.push_back({
+        // shadow prepass: one depth-only pass per shadow-casting light
+        for (size_t s = 0; s < shadowPrepassBindGroups.size(); ++s) {
+            rhi::RenderPassDesc shadowpass{};
+            shadowpass.depth.enabled = true;
+            shadowpass.depth.view = shadowMapTextureViews[s];
+            shadowpass.depth.clearDepth = true;
+            shadowpass.depth.clearDepthValue = 1.0f;
+            rhi.BeginRenderPass(cmd, shadowpass);
+            rhi.SetPipeline(cmd, shadowPrepassPipeline);
+            rhi.SetViewport(cmd, 0, 0, 1024.0f, 1024.0f);
+            rhi.SetScissor(cmd, 0, 0, 1024, 1024);
+            rhi.SetBindGroup(cmd, 0, shadowPrepassBindGroups[s]);
+            rhi.SetVertexBuffer(cmd, 0, model.vertexBuffer);
+            rhi.SetIndexBuffer(cmd, model.indexBuffer, rhi::IndexFormat::Uint32);
+            for (size_t d = 0; d < model.drawables.size(); ++d) {
+                const auto& submesh = model.primitivesList[model.drawables[d].submeshIdx];
+                rhi.DrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.baseVertex, 0);
+            }
+            rhi.EndPass(cmd);
+        }
+
+        rhi::RenderPassDesc imagepass{};
+        imagepass.swapchain = swapchain;
+        imagepass.imageIndex = acquired.imageIndex;
+        imagepass.colors.push_back({
             .useSwapchain = true,
             .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
             .clear = true
         });
-        pass.depth.enabled = true;
-        pass.depth.view = depthView;
-        pass.depth.clearDepth = true;
-        pass.depth.clearDepthValue = 1.0f;
-        rhi.BeginRenderPass(cmd, pass);
+        imagepass.depth.enabled = true;
+        imagepass.depth.view = depthView;
+        imagepass.depth.clearDepth = true;
+        imagepass.depth.clearDepthValue = 1.0f;
+        rhi.BeginRenderPass(cmd, imagepass);
         rhi.SetPipeline(cmd, pipeline);
         rhi.SetViewport(cmd, 0, 0, (float)w, (float)h);
         rhi.SetScissor(cmd, 0, 0, w, h);

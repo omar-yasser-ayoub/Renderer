@@ -1,3 +1,4 @@
+#include "rhi/resources/texture.h"
 #include <cstdint>
 #include <glm/glm.hpp>
 
@@ -17,11 +18,15 @@ struct ModelUBO {
     glm::mat4 modelMatrix;
 };
 
+struct ShadowPrepassUBO {
+    glm::mat4 lightViewProjMatrix;
+};
+
 constexpr uint32_t MAX_LIGHTS = 64;
 
 struct Light {
-    glm::vec4 posType;        // xyz = world position, w = type
-    glm::vec4 dirRadius;      // xyz = direction, w = range (point)
+    glm::vec4 posType;        // xyz = world position (point), w = type
+    glm::vec4 dirRadius;      // xyz = direction (directional), w = range (point)
     glm::vec4 colorIntensity; // rgb = color, w = intensity
 };
 
