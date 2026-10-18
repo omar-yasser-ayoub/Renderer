@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <glm/glm.hpp>
 
 struct MaterialUBO {
@@ -14,4 +15,18 @@ struct CameraUBO {
 
 struct ModelUBO {
     glm::mat4 modelMatrix;
+};
+
+constexpr uint32_t MAX_LIGHTS = 64;
+
+struct Light {
+    glm::vec4 posType;        // xyz = world position, w = type
+    glm::vec4 dirRadius;      // xyz = direction, w = range (point)
+    glm::vec4 colorIntensity; // rgb = color, w = intensity
+};
+
+struct LightData {
+    uint32_t lightCount;
+    uint32_t _pad[3];
+    Light lights[MAX_LIGHTS];
 };

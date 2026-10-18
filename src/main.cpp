@@ -261,6 +261,32 @@ int main()
     cameraEntry.binding = 0;
     cameraEntry.buffer = cameraUbo;
     cameraBindGroupDesc.entries.push_back(cameraEntry);
+
+    //create the light data buffer
+    rhi::BufferDesc lightBufferDesc;
+    lightBufferDesc.size = sizeof(LightData);
+    lightBufferDesc.usage = rhi::BufferUsage::Uniform;
+    lightBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+    rhi::BufferHandle lightUbo = rhi.CreateBuffer(lightBufferDesc);
+
+    LightData lightData{};
+
+    // directional light
+    lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(-0.5f, -1.0f, -0.4f)), 0.0f);
+    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.98f, 0.95f, 3.0f);
+
+    // point light
+    lightData.lights[1].posType = glm::vec4(0.0f, 6.0f, 0.0f, 1.0f);
+    lightData.lights[1].dirRadius = glm::vec4(0.0f, 0.0f, 0.0f, 15.0f);
+    lightData.lights[1].colorIntensity = glm::vec4(1.0f, 0.6f, 0.3f, 5.0f);
+    lightData.lightCount = 2;
+    rhi.WriteBuffer(lightUbo, &lightData, sizeof(LightData));
+
+    rhi::BindGroupEntry lightEntry;
+    lightEntry.binding = 1;
+    lightEntry.buffer = lightUbo;
+    cameraBindGroupDesc.entries.push_back(lightEntry);
+
     cameraBindGroupDesc.layout = bindGroupLayouts[0];
 
     rhi::BindGroupHandle cameraBindGroup = rhi.CreateBindGroup(cameraBindGroupDesc);

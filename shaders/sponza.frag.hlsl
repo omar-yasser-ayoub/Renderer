@@ -12,25 +12,32 @@ cbuffer Camera : register(b0, space0)
     float4   cameraPosition;
 };
 
+// 0 for directional
+// 1 for point
+// 2 for ambient
 struct Light {
     float4 posType; //xyz for first 3 floats, and the type in the last float
     float4 dirRadius; //xyz vector for direction and the last float for radius
     float4 colorIntensity; //rgb for color, last float for intensity
 };
 
+#define MAX_LIGHTS 64
+cbuffer Lights : register(b1, space0)
+{
+    uint lightCount;
+    uint3 _pad;
+    Light lights[MAX_LIGHTS];
+};
 
 cbuffer Material : register(b6, space1)
 {
     float4 baseColor;
     float  metallicFactor;
     float  roughnessFactor;
-    float2 _pad;
+    float2 _pad2;
 };
 
 static const float  PI              = 3.14159265f;
-static const float3 LIGHT_DIR       = normalize(float3(0.5f, 1.0f, 0.4f));
-static const float3 LIGHT_COLOR     = float3(1.0f, 0.98f, 0.95f);
-static const float  LIGHT_INTENSITY = 3.0f;
 
 struct PSInput
 {
@@ -92,29 +99,52 @@ float4 main(PSInput input) : SV_Target
     float3 V = normalize(cameraPosition.xyz - input.worldPos);
     N = PerturbNormal(input, N);
 
-    float3 L = LIGHT_DIR;
-    float3 H = normalize(V + L);
-    float3 radiance = LIGHT_COLOR * LIGHT_INTENSITY;
+    float3 lit = 0;
+    for (uint i = 0; i < lightCount; ++i) {
+        Light light = lights[i];
 
-    float NdotL = saturate(dot(N, L));
-    float NdotV = saturate(dot(N, V)) + 1e-4f;
-    float NdotH = saturate(dot(N, H));
-    float VdotH = saturate(dot(V, H));
+        if (lights[i].posType.w == 2) {
+            //Ambient light
+            lit += light.colorIntensity.xyz * light.colorIntensity.w;
+            continue;
+        }
 
-    float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo, metallic);
-    float  D  = DistributionGGX(NdotH, roughness);
-    float  G  = GeometrySchlick(NdotV, roughness) * GeometrySchlick(NdotL, roughness);
-    float3 F  = FresnelSchlick(VdotH, F0);
+        float3 L;
+        float atten = 1.0f;
+        if (lights[i].posType.w == 1) {
+            //Point light
+            float3 toLight = light.posType.xyz - input.worldPos;
+            float dist = length(toLight);
+            L = toLight / max(dist, 1e-4f);
+            atten = saturate(1.0f - dist / light.dirRadius.w);
+            atten *= atten;
+        } else {
+            //Directional light
+            L = normalize(-light.dirRadius.xyz);
+        }
 
-    float3 specular = (D * G * F) / max(4.0f * NdotV * NdotL, 1e-4f);
-    float3 kD       = (1.0f - F) * (1.0f - metallic);
-    float3 diffuse  = kD * albedo / PI;
+        float3 H = normalize(V + L);
+        float3 radiance = light.colorIntensity.xyz * light.colorIntensity.w;
 
-    float3 color = (diffuse + specular) * radiance * NdotL;
-    color += albedo * 0.03f;
+        float NdotL = saturate(dot(N, L));
+        float NdotV = saturate(dot(N, V)) + 1e-4f;
+        float NdotH = saturate(dot(N, H));
+        float VdotH = saturate(dot(V, H));
 
-    color = color / (color + 1.0f);
-    color = pow(color, 1.0f / 2.2f);
+        float3 F0 = lerp(float3(0.04f, 0.04f, 0.04f), albedo, metallic);
+        float  D  = DistributionGGX(NdotH, roughness);
+        float  G  = GeometrySchlick(NdotV, roughness) * GeometrySchlick(NdotL, roughness);
+        float3 F  = FresnelSchlick(VdotH, F0);
 
-    return float4(color, albedoSample.a * baseColor.a);
+        float3 specular = (D * G * F) / max(4.0f * NdotV * NdotL, 1e-4f);
+        float3 kD       = (1.0f - F) * (1.0f - metallic);
+        float3 diffuse  = kD * albedo / PI;
+
+        lit += (diffuse + specular) * radiance * NdotL * atten;
+    }
+
+    lit += albedo * 0.03f;
+    lit = lit / (lit + 1.0f);
+    lit = pow(lit, 1.0f / 2.2f);
+    return float4(lit, albedoSample.a * baseColor.a);
 }
