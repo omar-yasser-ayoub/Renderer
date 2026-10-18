@@ -263,15 +263,28 @@ int main()
 
     LightData lightData{};
 
-    // sun
-    lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(-0.5f, -1.0f, -0.4f)), 0.0f);
-    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.95f, 0.85f, 1.5f);
+    // A single directional "sun". dirRadius.xyz is the direction the light
+    // TRAVELS, so the sun sits at -dirRadius. A low, raking angle throws long
+    // shadows that reach across the courtyard instead of a short pool.
+    lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(-0.60f, -0.30f, -0.72f)), 0.0f);
+    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.93f, 0.82f, 2.4f);
 
-    // fill directional
-    lightData.lights[1].dirRadius = glm::vec4(glm::normalize(glm::vec3(0.6f, -0.4f, 0.5f)), 0.0f);
-    lightData.lights[1].colorIntensity = glm::vec4(0.55f, 0.65f, 1.0f, 0.8f);
+    uint32_t lightCount = 1;
 
-    lightData.lightCount = 2;
+    // colored point lights tucked into the courtyard so they glow inside the
+    // sun's shadow. w = type (1 = point), dirRadius.w = range.
+    auto addPointLight = [&](glm::vec3 position, glm::vec3 color, float intensity, float range) {
+        Light& light = lightData.lights[lightCount++];
+        light.posType        = glm::vec4(position, 1.0f);
+        light.dirRadius      = glm::vec4(0.0f, 0.0f, 0.0f, range);
+        light.colorIntensity = glm::vec4(color, intensity);
+    };
+
+    addPointLight(glm::vec3( 0.0f, 3.0f,  0.0f), glm::vec3(1.00f, 0.20f, 0.65f), 1.0f, 16.0f); // hot pink
+    addPointLight(glm::vec3( 6.0f, 3.5f, -3.0f), glm::vec3(0.55f, 0.25f, 1.00f), 1.0f, 16.0f); // purple
+    addPointLight(glm::vec3(-6.0f, 3.5f,  3.0f), glm::vec3(0.80f, 0.30f, 1.00f), 1.0f, 16.0f); // violet
+
+    lightData.lightCount = lightCount;
 
     // build one orthographic light matrix per shadow-casting directional light
     const glm::vec3 sceneCenter(0.0f, 0.0f, 0.0f);
