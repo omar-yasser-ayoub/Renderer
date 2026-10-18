@@ -535,6 +535,7 @@ int main()
             rhi.SetIndexBuffer(cmd, model.indexBuffer, rhi::IndexFormat::Uint32);
             for (size_t d = 0; d < model.drawables.size(); ++d) {
                 const auto& submesh = model.primitivesList[model.drawables[d].submeshIdx];
+                rhi.SetBindGroup(cmd, 1, modelBindGroups[d]);
                 rhi.DrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.baseVertex, 0);
             }
             rhi.EndPass(cmd);
