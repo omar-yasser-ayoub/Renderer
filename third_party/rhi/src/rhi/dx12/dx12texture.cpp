@@ -13,7 +13,10 @@ rhi::TextureHandle DX12RHI::CreateTexture(const rhi::TextureDesc& desc) {
     resourceDesc.Dimension = toD3D12(desc.dimension);
     resourceDesc.Width = desc.width;
     resourceDesc.Height = desc.height;
-    resourceDesc.DepthOrArraySize = desc.depth;
+    // 3D textures use depth; 1D/2D/cube use the array layer count.
+    resourceDesc.DepthOrArraySize = (desc.dimension == rhi::TextureDimension::Tex3D)
+        ? static_cast<UINT16>(desc.depth)
+        : static_cast<UINT16>(desc.arrayLayers);
     resourceDesc.MipLevels = desc.mipLevels;
     resourceDesc.SampleDesc.Count = toD3D12(desc.sampleCount);
     resourceDesc.Flags = toD3D12(desc.usage);
@@ -81,10 +84,26 @@ rhi::TextureViewHandle DX12RHI::CreateTextureView(const rhi::TextureViewDesc& de
             srvDesc.Format = toD3D12(desc.format);
         }
         srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        srvDesc.ViewDimension = toD3D12SrvDimension(desc.dimension);
-        srvDesc.Texture2D.MostDetailedMip = desc.baseMipLevel;
-        srvDesc.Texture2D.MipLevels = desc.mipLevels;
-        srvDesc.Texture2D.PlaneSlice = (desc.aspect == rhi::TextureAspect::Stencil) ? 1 : 0;
+
+        D3D12_SRV_DIMENSION srvDim = toD3D12SrvDimension(desc.dimension);
+        // A Tex2D view onto an array texture must address a single slice, which
+        // requires the array view dimension.
+        if (srvDim == D3D12_SRV_DIMENSION_TEXTURE2D && textureDesc.arrayLayers > 1)
+            srvDim = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        srvDesc.ViewDimension = srvDim;
+
+        const UINT planeSlice = (desc.aspect == rhi::TextureAspect::Stencil) ? 1 : 0;
+        if (srvDim == D3D12_SRV_DIMENSION_TEXTURE2DARRAY) {
+            srvDesc.Texture2DArray.MostDetailedMip = desc.baseMipLevel;
+            srvDesc.Texture2DArray.MipLevels = desc.mipLevels;
+            srvDesc.Texture2DArray.FirstArraySlice = desc.baseArrayLayer;
+            srvDesc.Texture2DArray.ArraySize = desc.arrayLayers;
+            srvDesc.Texture2DArray.PlaneSlice = planeSlice;
+        } else {
+            srvDesc.Texture2D.MostDetailedMip = desc.baseMipLevel;
+            srvDesc.Texture2D.MipLevels = desc.mipLevels;
+            srvDesc.Texture2D.PlaneSlice = planeSlice;
+        }
 
         auto handles = AllocateDescriptor(
                m_CbvSrvUavHeap,
@@ -104,8 +123,19 @@ rhi::TextureViewHandle DX12RHI::CreateTextureView(const rhi::TextureViewDesc& de
     if (wantsUav) {
         D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
         uavDesc.Format = toD3D12(desc.format);
-        uavDesc.ViewDimension = toD3D12UavDimension(desc.dimension);
-        uavDesc.Texture2D.MipSlice = desc.baseMipLevel;
+
+        D3D12_UAV_DIMENSION uavDim = toD3D12UavDimension(desc.dimension);
+        if (uavDim == D3D12_UAV_DIMENSION_TEXTURE2D && textureDesc.arrayLayers > 1)
+            uavDim = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+        uavDesc.ViewDimension = uavDim;
+
+        if (uavDim == D3D12_UAV_DIMENSION_TEXTURE2DARRAY) {
+            uavDesc.Texture2DArray.MipSlice = desc.baseMipLevel;
+            uavDesc.Texture2DArray.FirstArraySlice = desc.baseArrayLayer;
+            uavDesc.Texture2DArray.ArraySize = desc.arrayLayers;
+        } else {
+            uavDesc.Texture2D.MipSlice = desc.baseMipLevel;
+        }
 
         auto handles = AllocateDescriptor(
                m_CbvSrvUavHeap,
@@ -125,8 +155,19 @@ rhi::TextureViewHandle DX12RHI::CreateTextureView(const rhi::TextureViewDesc& de
     if (wantsRtv) {
         D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
         rtvDesc.Format = toD3D12(desc.format);
-        rtvDesc.ViewDimension = toD3D12RtvDimension(desc.dimension);
-        rtvDesc.Texture2D.MipSlice = desc.baseMipLevel;
+
+        D3D12_RTV_DIMENSION rtvDim = toD3D12RtvDimension(desc.dimension);
+        if (rtvDim == D3D12_RTV_DIMENSION_TEXTURE2D && textureDesc.arrayLayers > 1)
+            rtvDim = D3D12_RTV_DIMENSION_TEXTURE2DARRAY;
+        rtvDesc.ViewDimension = rtvDim;
+
+        if (rtvDim == D3D12_RTV_DIMENSION_TEXTURE2DARRAY) {
+            rtvDesc.Texture2DArray.MipSlice = desc.baseMipLevel;
+            rtvDesc.Texture2DArray.FirstArraySlice = desc.baseArrayLayer;
+            rtvDesc.Texture2DArray.ArraySize = desc.arrayLayers;
+        } else {
+            rtvDesc.Texture2D.MipSlice = desc.baseMipLevel;
+        }
 
         auto handles = AllocateDescriptor(
                m_RtvHeap,
@@ -145,8 +186,19 @@ rhi::TextureViewHandle DX12RHI::CreateTextureView(const rhi::TextureViewDesc& de
     if (wantsDsv) {
         D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
         dsvDesc.Format = toD3D12(desc.format);
-        dsvDesc.ViewDimension = toD3D12DsvDimension(desc.dimension);
-        dsvDesc.Texture2D.MipSlice = desc.baseMipLevel;
+
+        D3D12_DSV_DIMENSION dsvDim = toD3D12DsvDimension(desc.dimension);
+        if (dsvDim == D3D12_DSV_DIMENSION_TEXTURE2D && textureDesc.arrayLayers > 1)
+            dsvDim = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsvDesc.ViewDimension = dsvDim;
+
+        if (dsvDim == D3D12_DSV_DIMENSION_TEXTURE2DARRAY) {
+            dsvDesc.Texture2DArray.MipSlice = desc.baseMipLevel;
+            dsvDesc.Texture2DArray.FirstArraySlice = desc.baseArrayLayer;
+            dsvDesc.Texture2DArray.ArraySize = desc.arrayLayers;
+        } else {
+            dsvDesc.Texture2D.MipSlice = desc.baseMipLevel;
+        }
 
         auto handles = AllocateDescriptor(
                m_DsvHeap,

@@ -1,4 +1,4 @@
-Texture2D<float4> AlbedoMap : register(t0, space1);
+ Texture2D<float4> AlbedoMap : register(t0, space1);
 Texture2D<float4> NormalMap : register(t1, space1);
 Texture2D<float4> RmMap     : register(t2, space1);
 
@@ -19,6 +19,10 @@ struct Light {
     float4 posType; //xyz for first 3 floats, and the type in the last float
     float4 dirRadius; //xyz vector for direction and the last float for radius
     float4 colorIntensity; //rgb for color, last float for intensity
+    int    shadowIndex; // index into the shadow map array, -1 = no shadow
+    int    _pad0;
+    int    _pad1;
+    int    _pad2;
 };
 
 #define MAX_LIGHTS 64
@@ -29,6 +33,18 @@ cbuffer Lights : register(b1, space0)
     uint _lightPad2;
     Light lights[MAX_LIGHTS];
 };
+
+#define NUM_SHADOWS 64
+#define SHADOW_BIAS 0.0025f
+
+cbuffer Shadow : register(b2, space0)
+{
+    float4x4 lightViewProj[NUM_SHADOWS];
+};
+
+// Depth texture: sampled through a comparison sampler (hardware PCF-friendly).
+Texture2DArray         ShadowMaps    : register(t3, space0);
+SamplerComparisonState ShadowSampler : register(s4, space0);
 
 cbuffer Material : register(b6, space1)
 {
@@ -87,6 +103,21 @@ float3 FresnelSchlick(float cosTheta, float3 F0)
     return F0 + (1.0f - F0) * pow(saturate(1.0f - cosTheta), 5.0f);
 }
 
+float SampleShadow(float3 worldPos, int shadowIdx)
+{
+    float4 lightSpace = mul(lightViewProj[shadowIdx], float4(worldPos, 1.0f));
+    float3 proj = lightSpace.xyz / lightSpace.w;
+    float2 uv   = proj.xy * 0.5f + 0.5f;
+
+    // outside the light frustum -> lit
+    if (any(uv != saturate(uv)) || proj.z > 1.0f) {
+        return 1.0f;
+    }
+
+    // Hardware depth comparison: returns 1 when the fragment is not occluded.
+    return ShadowMaps.SampleCmpLevelZero(ShadowSampler, float3(uv, (float)shadowIdx), proj.z - SHADOW_BIAS);
+}
+
 float4 main(PSInput input) : SV_Target
 {
     float4 albedoSample = AlbedoMap.Sample(AlbedoSamp, input.uv);
@@ -124,6 +155,11 @@ float4 main(PSInput input) : SV_Target
             L = normalize(-light.dirRadius.xyz);
         }
 
+        float shadow = 1.0f;
+        if (light.shadowIndex >= 0) {
+            shadow = SampleShadow(input.worldPos, light.shadowIndex);
+        }
+
         float3 H = normalize(V + L);
         float3 radiance = light.colorIntensity.xyz * light.colorIntensity.w;
 
@@ -141,7 +177,7 @@ float4 main(PSInput input) : SV_Target
         float3 kD       = (1.0f - F) * (1.0f - metallic);
         float3 diffuse  = kD * albedo / PI;
 
-        lit += (diffuse + specular) * radiance * NdotL * atten;
+        lit += (diffuse + specular) * radiance * NdotL * atten * shadow;
     }
 
     lit += albedo * 0.03f;

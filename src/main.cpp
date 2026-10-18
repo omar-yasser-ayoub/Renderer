@@ -263,21 +263,119 @@ int main()
 
     LightData lightData{};
 
-    // directional light
+    // sun
     lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(-0.5f, -1.0f, -0.4f)), 0.0f);
-    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.98f, 0.95f, 3.0f);
+    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.95f, 0.85f, 1.5f);
 
-    // point light
-    lightData.lights[1].posType = glm::vec4(0.0f, 6.0f, 0.0f, 1.0f);
-    lightData.lights[1].dirRadius = glm::vec4(0.0f, 0.0f, 0.0f, 15.0f);
-    lightData.lights[1].colorIntensity = glm::vec4(1.0f, 0.6f, 0.3f, 5.0f);
+    // fill directional
+    lightData.lights[1].dirRadius = glm::vec4(glm::normalize(glm::vec3(0.6f, -0.4f, 0.5f)), 0.0f);
+    lightData.lights[1].colorIntensity = glm::vec4(0.55f, 0.65f, 1.0f, 0.8f);
+
     lightData.lightCount = 2;
+
+    // build one orthographic light matrix per shadow-casting directional light
+    const glm::vec3 sceneCenter(0.0f, 0.0f, 0.0f);
+    const float sceneRadius = 40.0f;
+    const float lightDistance = 1000.0f;
+
+    ShadowData shadowData{};
+    uint32_t shadowCount = 0;
+    for (uint32_t i = 0; i < lightData.lightCount && shadowCount < MAX_SHADOWS; ++i) {
+        if (lightData.lights[i].posType.w != 0.0f) {
+            continue; // only directional lights cast shadows for now
+        }
+
+        const glm::vec3 lightDir = glm::normalize(glm::vec3(lightData.lights[i].dirRadius));
+        const glm::vec3 lightPos = sceneCenter - lightDir * lightDistance;
+
+        glm::vec3 up(0.0f, 1.0f, 0.0f);
+        if (glm::abs(glm::dot(up, lightDir)) > 0.99f) {
+            up = glm::vec3(1.0f, 0.0f, 0.0f);
+        }
+
+        const glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, up);
+        const glm::mat4 lightProj = glm::orthoRH_ZO(
+            -sceneRadius, sceneRadius,
+            -sceneRadius, sceneRadius,
+            lightDistance - sceneRadius,
+            lightDistance + sceneRadius);
+
+        shadowData.lightViewProj[shadowCount] = lightProj * lightView;
+        lightData.lights[i].shadowIndex = static_cast<int>(shadowCount);
+        ++shadowCount;
+    }
+
     rhi.WriteBuffer(lightUbo, &lightData, sizeof(LightData));
 
     rhi::BindGroupEntry lightEntry;
     lightEntry.binding = 1;
     lightEntry.buffer = lightUbo;
     cameraBindGroupDesc.entries.push_back(lightEntry);
+
+    // one depth texture, one layer per shadow-casting light
+    rhi::TextureDesc shadowMapDesc;
+    shadowMapDesc.format = rhi::TextureFormat::Depth32Float;
+    shadowMapDesc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::DepthStencil;
+    shadowMapDesc.dimension = rhi::TextureDimension::Tex2D;
+    shadowMapDesc.width = 1024;
+    shadowMapDesc.height = 1024;
+    shadowMapDesc.mipLevels = 1;
+    shadowMapDesc.arrayLayers = MAX_SHADOWS;
+    rhi::TextureHandle shadowMapTexture = rhi.CreateTexture(shadowMapDesc);
+
+    // single-layer views: the render target for each light's depth pass
+    std::vector<rhi::TextureViewHandle> shadowLayerViews;
+    for (uint32_t s = 0; s < MAX_SHADOWS; ++s) {
+        rhi::TextureViewDesc layerViewDesc;
+        layerViewDesc.dimension = rhi::TextureViewDimension::Tex2D;
+        layerViewDesc.format = shadowMapDesc.format;
+        layerViewDesc.aspect = rhi::TextureAspect::Depth;
+        layerViewDesc.baseMipLevel = 0;
+        layerViewDesc.baseArrayLayer = s;
+        layerViewDesc.mipLevels = 1;
+        layerViewDesc.arrayLayers = 1;
+        shadowLayerViews.push_back(rhi.CreateTextureView(layerViewDesc, shadowMapTexture));
+    }
+
+    // full-array view: what the fragment shader samples
+    rhi::TextureViewDesc shadowArrayViewDesc;
+    shadowArrayViewDesc.dimension = rhi::TextureViewDimension::Tex2DArray;
+    shadowArrayViewDesc.format = shadowMapDesc.format;
+    shadowArrayViewDesc.aspect = rhi::TextureAspect::Depth;
+    shadowArrayViewDesc.baseMipLevel = 0;
+    shadowArrayViewDesc.baseArrayLayer = 0;
+    shadowArrayViewDesc.mipLevels = 1;
+    shadowArrayViewDesc.arrayLayers = MAX_SHADOWS;
+    rhi::TextureViewHandle shadowArrayView = rhi.CreateTextureView(shadowArrayViewDesc, shadowMapTexture);
+
+    const rhi::SamplerHandle shadowSampler = rhi.CreateSampler({
+        .addressU = rhi::AddressMode::ClampToEdge,
+        .addressV = rhi::AddressMode::ClampToEdge,
+        .compareEnabled = true,
+        .compareOp = rhi::CompareOp::LessEqual,
+    });
+
+    rhi::BufferDesc shadowDataBufferDesc;
+    shadowDataBufferDesc.size = sizeof(ShadowData);
+    shadowDataBufferDesc.usage = rhi::BufferUsage::Uniform;
+    shadowDataBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+    rhi::BufferHandle shadowDataBuffer = rhi.CreateBuffer(shadowDataBufferDesc);
+    rhi.WriteBuffer(shadowDataBuffer, &shadowData, sizeof(ShadowData));
+
+    rhi::BindGroupEntry shadowDataEntry;
+    shadowDataEntry.binding = 2;
+    shadowDataEntry.buffer = shadowDataBuffer;
+    cameraBindGroupDesc.entries.push_back(shadowDataEntry);
+
+    rhi::BindGroupEntry shadowMapEntry;
+    shadowMapEntry.binding = 3;
+    shadowMapEntry.textureView = shadowArrayView;
+    cameraBindGroupDesc.entries.push_back(shadowMapEntry);
+
+    rhi::BindGroupEntry shadowSamplerEntry;
+    shadowSamplerEntry.binding = 4;
+    shadowSamplerEntry.sampler = shadowSampler;
+    cameraBindGroupDesc.entries.push_back(shadowSamplerEntry);
 
     cameraBindGroupDesc.layout = bindGroupLayouts[0];
 
@@ -369,75 +467,26 @@ int main()
 
     auto shadowPrepassPipeline = rhi.CreateGraphicsPipeline(shadowPrepassPipelineDesc);
 
-    std::vector<ShadowPrepassUBO> shadowPrepassUbos;
-    std::vector<rhi::TextureViewHandle> shadowMapTextureViews;
+    // one small per-light UBO + bind group for the depth passes (matrix at offset 0)
     std::vector<rhi::BindGroupHandle> shadowPrepassBindGroups;
+    for (uint32_t s = 0; s < shadowCount; ++s) {
+        rhi::BufferDesc shadowPrepassBufferDesc;
+        shadowPrepassBufferDesc.size = sizeof(ShadowPrepassUBO);
+        shadowPrepassBufferDesc.usage = rhi::BufferUsage::Uniform;
+        shadowPrepassBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+        rhi::BufferHandle shadowPrepassBuffer = rhi.CreateBuffer(shadowPrepassBufferDesc);
 
+        ShadowPrepassUBO shadowPrepassData{};
+        shadowPrepassData.lightViewProjMatrix = shadowData.lightViewProj[s];
+        rhi.WriteBuffer(shadowPrepassBuffer, &shadowPrepassData, sizeof(ShadowPrepassUBO));
 
-    for (size_t i = 0; i < lightData.lightCount; ++i) {
-        if (lightData.lights[i].posType.w == 0) {
-            // this is a directional light, we'll add it to the shadowprepassubos, and we should create a texture + view for it!
-            rhi::TextureDesc shadowMapDesc;
-            shadowMapDesc.format = rhi::TextureFormat::Depth32Float;
-            shadowMapDesc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::DepthStencil;
-            shadowMapDesc.dimension = rhi::TextureDimension::Tex2D;
-            shadowMapDesc.width = 1024;
-            shadowMapDesc.height = 1024;
-            shadowMapDesc.depth = 1;
-            shadowMapDesc.mipLevels = 1;
-            shadowMapDesc.arrayLayers = 1;
-
-            rhi::TextureHandle shadowMapTexture = rhi.CreateTexture(shadowMapDesc);
-
-            rhi::TextureViewDesc shadowMapViewDesc;
-            shadowMapViewDesc.dimension = rhi::TextureViewDimension::Tex2D;
-            shadowMapViewDesc.format = shadowMapDesc.format;
-            shadowMapViewDesc.aspect = rhi::TextureAspect::Depth;
-            shadowMapViewDesc.baseMipLevel = 0;
-            shadowMapViewDesc.baseArrayLayer = 0;
-            shadowMapViewDesc.mipLevels = 1;
-            shadowMapViewDesc.arrayLayers = 1;
-            shadowMapTextureViews.push_back(rhi.CreateTextureView(shadowMapViewDesc, shadowMapTexture));
-
-            const glm::vec3 lightDir = glm::normalize(glm::vec3(lightData.lights[i].dirRadius));
-            const glm::vec3 sceneCenter(0.0f, 0.0f, 0.0f);
-            const float sceneRadius = 40.0f;
-            const float lightDistance = 1000.0f;
-
-            const glm::vec3 lightPos = sceneCenter - lightDir * lightDistance;
-
-            glm::vec3 up(0.0f, 1.0f, 0.0f);
-            if (glm::abs(glm::dot(up, lightDir)) > 0.99f) {
-                up = glm::vec3(1.0f, 0.0f, 0.0f);
-            }
-
-            const glm::mat4 lightView = glm::lookAt(lightPos, sceneCenter, up);
-            const glm::mat4 lightProj = glm::orthoRH_ZO(
-                -sceneRadius, sceneRadius,
-                -sceneRadius, sceneRadius,
-                lightDistance - sceneRadius,
-                lightDistance + sceneRadius);
-
-            rhi::BufferDesc shadowPrepassBufferDesc;
-            shadowPrepassBufferDesc.size = sizeof(ShadowPrepassUBO);
-            shadowPrepassBufferDesc.usage = rhi::BufferUsage::Uniform;
-            shadowPrepassBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
-            rhi::BufferHandle shadowPrepassBuffer = rhi.CreateBuffer(shadowPrepassBufferDesc);
-
-            ShadowPrepassUBO shadowPrepassData{};
-            shadowPrepassData.lightViewProjMatrix = lightProj * lightView;
-            rhi.WriteBuffer(shadowPrepassBuffer, &shadowPrepassData, sizeof(ShadowPrepassUBO));
-            shadowPrepassUbos.push_back(shadowPrepassData);
-
-            // Create the bind group for the shadow prepass
-            rhi::BindGroupDesc shadowPrepassBindGroupDesc;
-            rhi::BindGroupEntry shadowPrepassEntry;
-            shadowPrepassEntry.binding = 0;
-            shadowPrepassEntry.buffer = shadowPrepassBuffer;
-            shadowPrepassBindGroupDesc.entries.push_back(shadowPrepassEntry);
-            shadowPrepassBindGroupDesc.layout = prepassBindGroupLayouts[0];
-            shadowPrepassBindGroups.push_back(rhi.CreateBindGroup(shadowPrepassBindGroupDesc));
-        }
+        rhi::BindGroupDesc shadowPrepassBindGroupDesc;
+        rhi::BindGroupEntry shadowPrepassEntry;
+        shadowPrepassEntry.binding = 0;
+        shadowPrepassEntry.buffer = shadowPrepassBuffer;
+        shadowPrepassBindGroupDesc.entries.push_back(shadowPrepassEntry);
+        shadowPrepassBindGroupDesc.layout = prepassBindGroupLayouts[0];
+        shadowPrepassBindGroups.push_back(rhi.CreateBindGroup(shadowPrepassBindGroupDesc));
     }
 
 
@@ -461,7 +510,7 @@ int main()
         for (size_t s = 0; s < shadowPrepassBindGroups.size(); ++s) {
             rhi::RenderPassDesc shadowpass{};
             shadowpass.depth.enabled = true;
-            shadowpass.depth.view = shadowMapTextureViews[s];
+            shadowpass.depth.view = shadowLayerViews[s];
             shadowpass.depth.clearDepth = true;
             shadowpass.depth.clearDepthValue = 1.0f;
             rhi.BeginRenderPass(cmd, shadowpass);

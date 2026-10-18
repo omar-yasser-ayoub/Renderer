@@ -68,7 +68,9 @@ rhi::BindGroupLayoutHandle WebGPURHI::CreateBindGroupLayout(const rhi::BindGroup
                 : (shaderBinding.unfilterableSampled
                     ? wgpu::TextureSampleType::UnfilterableFloat
                     : wgpu::TextureSampleType::Float);
-            entry.texture.viewDimension = wgpu::TextureViewDimension::e2D;
+            entry.texture.viewDimension = shaderBinding.arrayed
+                ? wgpu::TextureViewDimension::e2DArray
+                : wgpu::TextureViewDimension::e2D;
             entry.texture.multisampled = false;
             break;
 
@@ -77,8 +79,9 @@ rhi::BindGroupLayoutHandle WebGPURHI::CreateBindGroupLayout(const rhi::BindGroup
                 wgpu::StorageTextureAccess::ReadWrite;
             entry.storageTexture.format =
                 wgpu::TextureFormat::R32Float;
-            entry.storageTexture.viewDimension =
-                wgpu::TextureViewDimension::e2D;
+            entry.storageTexture.viewDimension = shaderBinding.arrayed
+                ? wgpu::TextureViewDimension::e2DArray
+                : wgpu::TextureViewDimension::e2D;
             break;
 
         case rhi::BindingType::Sampler:

@@ -57,6 +57,10 @@ namespace rhi {
         // Lets WebGPU bind depth-as-data (or any texture) without a
         // filtering sampler requirement. Cleared by any filtering use.
         bool unfilterableSampled = false;
+        // True when the image is an array texture (e.g. Texture2DArray).
+        // Backends that must declare the view dimension in the layout
+        // (WebGPU) need this; Vulkan/DX12 derive it from the bound view.
+        bool arrayed = false;
     };
 
     enum class VertexFormat

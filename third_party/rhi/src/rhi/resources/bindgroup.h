@@ -51,6 +51,7 @@ namespace rhi {
                         // Unfilterable only survives if NO stage filters it.
                         existing.unfilterableSampled =
                             existing.unfilterableSampled && binding.unfilterableSampled;
+                        existing.arrayed = existing.arrayed || binding.arrayed;
                         merged = true;
                         break;
                     }

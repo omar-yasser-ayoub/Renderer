@@ -540,6 +540,12 @@ rhi::ShaderReflection WebGPURHI::ParseReflection(
             continue;
         }
 
+        if (binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
+            binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
+            binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
+            bindingResult.arrayed = binding->image.arrayed != 0;
+        }
+
         result.bindings.push_back(bindingResult);
     }
 

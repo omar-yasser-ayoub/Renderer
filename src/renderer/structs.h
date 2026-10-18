@@ -22,12 +22,20 @@ struct ShadowPrepassUBO {
     glm::mat4 lightViewProjMatrix;
 };
 
+constexpr uint32_t MAX_SHADOWS = 64;
+
+struct ShadowData {
+    glm::mat4 lightViewProj[MAX_SHADOWS];
+};
+
 constexpr uint32_t MAX_LIGHTS = 64;
 
 struct Light {
     glm::vec4 posType;        // xyz = world position (point), w = type
     glm::vec4 dirRadius;      // xyz = direction (directional), w = range (point)
     glm::vec4 colorIntensity; // rgb = color, w = intensity
+    int shadowIndex = -1;     // index into ShadowData::lightViewProj, -1 = no shadow
+    int _pad[3] = {0, 0, 0};
 };
 
 struct LightData {

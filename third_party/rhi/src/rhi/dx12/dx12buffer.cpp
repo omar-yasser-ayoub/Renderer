@@ -1,5 +1,7 @@
 #include "rhi/dx12/dx12rhi.h"
 #include <cstring>
+#include <vector>
+#include <d3d12sdklayers.h>
 
 rhi::BufferHandle DX12RHI::CreateBuffer(const rhi::BufferDesc& desc) {
     if (!m_Device || desc.size == 0) {
