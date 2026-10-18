@@ -12,6 +12,13 @@ cbuffer Camera : register(b0, space0)
     float4   cameraPosition;
 };
 
+struct Light {
+    float4 posType; //xyz for first 3 floats, and the type in the last float
+    float4 dirRadius; //xyz vector for direction and the last float for radius
+    float4 colorIntensity; //rgb for color, last float for intensity
+};
+
+
 cbuffer Material : register(b6, space1)
 {
     float4 baseColor;

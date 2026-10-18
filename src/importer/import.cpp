@@ -138,7 +138,29 @@ ModelData loadModel(RHI& rhi, const std::string& path)
         samplerList.push_back(samplerHandle);
     }
 
-    for (const auto& image : images) {
+    // we do a prepass to determine each image's usage to know if we should make it into srgb (for albedo textures) or linear (for normal/rm textures)
+    std::vector<bool> imageIsSrgb(images.size(), false);
+
+    for (const auto& material : materials) {
+        auto markTexture = [&](const auto& textureInfo, bool srgb) {
+            if (!textureInfo.has_value())
+                return;
+
+            const auto& texture = asset.textures[textureInfo->textureIndex];
+
+            if (texture.imageIndex.has_value())
+                imageIsSrgb[texture.imageIndex.value()] = imageIsSrgb[texture.imageIndex.value()] || srgb;
+        };
+
+        markTexture(material.pbrData.baseColorTexture, true);
+        markTexture(material.emissiveTexture, true);
+
+        markTexture(material.normalTexture, false);
+        markTexture(material.pbrData.metallicRoughnessTexture, false);
+        markTexture(material.occlusionTexture, false);
+    }
+
+    for (size_t i = 0; i < images.size(); ++i) {
 
         const std::byte* bytes = nullptr; size_t len = 0;
 
@@ -146,7 +168,7 @@ ModelData loadModel(RHI& rhi, const std::string& path)
           [&](auto&) {},
           [&](const fastgltf::sources::Array& a)    { bytes = a.bytes.data(); len = a.bytes.size(); },
           [&](const fastgltf::sources::ByteView& b) { bytes = b.bytes.data(); len = b.bytes.size(); },
-        }, image.data);
+        }, images[i].data);
 
         if (!bytes) {
             textureViewList.push_back({});
@@ -163,7 +185,9 @@ ModelData loadModel(RHI& rhi, const std::string& path)
         rhi::TextureDesc desc;
         desc.width = width;
         desc.height = height;
-        desc.format = rhi::TextureFormat::RGBA8UnormSrgb;
+        desc.format = imageIsSrgb[i]
+            ? rhi::TextureFormat::RGBA8UnormSrgb
+            : rhi::TextureFormat::RGBA8Unorm;
         desc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::CopyDst;
         auto texture = rhi.CreateTexture(desc);
 
