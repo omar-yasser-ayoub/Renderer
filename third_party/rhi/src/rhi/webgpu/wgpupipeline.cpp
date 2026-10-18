@@ -23,21 +23,38 @@ rhi::GraphicsPipelineHandle WebGPURHI::CreateGraphicsPipeline(
         !m_PipelineLayouts[desc.layout.id]) {
         return handle;
     }
-    if (desc.vertexShader.id >= m_ShaderModules.size() ||
-        desc.fragmentShader.id >= m_ShaderModules.size()) {
+    // A fragment shader is only required when the pipeline writes color
+    // targets. Depth-only pipelines (e.g. a shadow prepass) omit the
+    // fragment stage entirely.
+    const bool hasColorTargets = !desc.colorTargets.empty();
+    if (desc.vertexShader.id >= m_ShaderModules.size()) {
+        return handle;
+    }
+    if (hasColorTargets && desc.fragmentShader.id >= m_ShaderModules.size()) {
         return handle;
     }
 
     const rhi::ShaderModule& vsModule = m_ShaderModules[desc.vertexShader.id];
-    const rhi::ShaderModule& fsModule = m_ShaderModules[desc.fragmentShader.id];
-    if (vsModule.bytecode.empty() || fsModule.bytecode.empty()) {
+    if (vsModule.bytecode.empty()) {
         return handle;
     }
 
     wgpu::ShaderModule vs = MakeShaderModule(vsModule);
-    wgpu::ShaderModule fs = MakeShaderModule(fsModule);
-    if (!vs || !fs) {
+    if (!vs) {
         return handle;
+    }
+
+    wgpu::ShaderModule fs;
+    const rhi::ShaderModule* fsModule = nullptr;
+    if (hasColorTargets) {
+        fsModule = &m_ShaderModules[desc.fragmentShader.id];
+        if (fsModule->bytecode.empty()) {
+            return handle;
+        }
+        fs = MakeShaderModule(*fsModule);
+        if (!fs) {
+            return handle;
+        }
     }
 
     std::vector<std::vector<wgpu::VertexAttribute>> wgpuAttributes(desc.vertexBuffers.size());
@@ -140,10 +157,10 @@ rhi::GraphicsPipelineHandle WebGPURHI::CreateGraphicsPipeline(
     pipelineDesc.multisample.mask = 0xFFFFFFFF;
 
     wgpu::FragmentState fragment{};
-    if (!desc.colorTargets.empty()) {
+    if (hasColorTargets) {
         fragment.module = fs;
         fragment.entryPoint = wgpu::StringView(
-            fsModule.entryPoint.data(), fsModule.entryPoint.size());
+            fsModule->entryPoint.data(), fsModule->entryPoint.size());
         fragment.targetCount = wgpuTargets.size();
         fragment.targets = wgpuTargets.data();
         pipelineDesc.fragment = &fragment;

@@ -25,7 +25,8 @@ struct Light {
 cbuffer Lights : register(b1, space0)
 {
     uint lightCount;
-    uint3 _pad;
+    uint _lightPad1;
+    uint _lightPad2;
     Light lights[MAX_LIGHTS];
 };
 

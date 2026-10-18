@@ -116,14 +116,21 @@ rhi::GraphicsPipelineHandle DX12RHI::CreateGraphicsPipeline(
         !m_PipelineLayouts[desc.layout.id].rootSignature) {
         return handle;
     }
-    if (desc.vertexShader.id >= m_ShaderModules.size() ||
-        desc.fragmentShader.id >= m_ShaderModules.size()) {
+    // A pixel shader is only required when the pipeline writes color targets.
+    // Depth-only pipelines (e.g. a shadow prepass) omit it.
+    const bool hasColorTargets = !desc.colorTargets.empty();
+    if (desc.vertexShader.id >= m_ShaderModules.size()) {
+        return handle;
+    }
+    if (hasColorTargets && desc.fragmentShader.id >= m_ShaderModules.size()) {
         return handle;
     }
 
     const rhi::ShaderModule& vsModule = m_ShaderModules[desc.vertexShader.id];
-    const rhi::ShaderModule& fsModule = m_ShaderModules[desc.fragmentShader.id];
-    if (vsModule.bytecode.empty() || fsModule.bytecode.empty()) {
+    if (vsModule.bytecode.empty()) {
+        return handle;
+    }
+    if (hasColorTargets && m_ShaderModules[desc.fragmentShader.id].bytecode.empty()) {
         return handle;
     }
     for (const auto& buffer : desc.vertexBuffers) {
@@ -138,8 +145,11 @@ rhi::GraphicsPipelineHandle DX12RHI::CreateGraphicsPipeline(
     psoDesc.pRootSignature = m_PipelineLayouts[desc.layout.id].rootSignature.Get();
     psoDesc.VS.pShaderBytecode = vsModule.bytecode.data();
     psoDesc.VS.BytecodeLength = vsModule.bytecode.size();
-    psoDesc.PS.pShaderBytecode = fsModule.bytecode.data();
-    psoDesc.PS.BytecodeLength = fsModule.bytecode.size();
+    if (hasColorTargets) {
+        const rhi::ShaderModule& fsModule = m_ShaderModules[desc.fragmentShader.id];
+        psoDesc.PS.pShaderBytecode = fsModule.bytecode.data();
+        psoDesc.PS.BytecodeLength = fsModule.bytecode.size();
+    }
     psoDesc.SampleMask = UINT_MAX;
 
     const std::vector<rhi::VertexInputAttr>& reflectedInputs =
