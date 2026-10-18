@@ -291,8 +291,8 @@ int main()
 
     rhi::BindGroupHandle cameraBindGroup = rhi.CreateBindGroup(cameraBindGroupDesc);
 
-    const glm::vec3 cameraPos(10.0f, 2.0f, 0.0f);
-    const glm::vec3 cameraTarget(-0.5f, 5.0f, -0.3f);
+    const glm::vec3 cameraPos(6.0f, 1.0f, 0.0f);
+    const glm::vec3 cameraTarget(-0.5f, 1.0f, -0.3f);
     const glm::mat4 view = glm::lookAt(
         cameraPos,
         cameraTarget,
