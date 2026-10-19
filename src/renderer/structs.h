@@ -22,6 +22,13 @@ struct ShadowPrepassUBO {
     glm::mat4 lightViewProjMatrix;
 };
 
+struct AOUBO {
+    glm::mat4 invProjection;
+    glm::vec2 resolution;
+    float radius;
+    float strength;
+};
+
 constexpr uint32_t MAX_SHADOWS = 64;
 
 struct ShadowData {

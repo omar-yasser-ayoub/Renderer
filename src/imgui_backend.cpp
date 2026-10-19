@@ -190,10 +190,6 @@ void ImGuiRenderer::NewFrame(double deltaTimeSeconds, std::uint32_t frameWidth,
 
 bool ImGuiRenderer::UploadBuffers(RHI& rhi, const ImDrawData* drawData)
 {
-    // WebGPU only maps/copies/binds at 4-byte granularity: pad the final
-    // upload sizes, and start every draw list's index data on a 4-byte
-    // boundary (index data is 2 bytes per index, so round up to even counts).
-    // Vertex footprints (20 bytes/vertex) are inherently 4-byte aligned.
     constexpr std::size_t kIndexAlign = 2; // in indices
 
     std::size_t vtxTotal = 0, idxTotal = 0;

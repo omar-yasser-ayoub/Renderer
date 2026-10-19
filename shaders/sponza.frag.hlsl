@@ -45,6 +45,7 @@ cbuffer Shadow : register(b2, space0)
 // Depth texture: sampled through a comparison sampler (hardware PCF-friendly).
 Texture2DArray         ShadowMaps    : register(t3, space0);
 SamplerComparisonState ShadowSampler : register(s4, space0);
+Texture2D<float>       AOTexture     : register(t5, space0);
 
 cbuffer Material : register(b6, space1)
 {
@@ -180,7 +181,8 @@ float4 main(PSInput input) : SV_Target
         lit += (diffuse + specular) * radiance * NdotL * atten * shadow;
     }
 
-    lit += albedo * 0.03f;
+    float ao = AOTexture.Load(int3(input.position.xy, 0));
+    lit += albedo * 0.15f * ao;
     lit = lit / (lit + 1.0f);
     lit = pow(lit, 1.0f / 2.2f);
     return float4(lit, albedoSample.a * baseColor.a);

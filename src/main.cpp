@@ -397,10 +397,6 @@ int main()
     shadowSamplerEntry.sampler = shadowSampler;
     cameraBindGroupDesc.entries.push_back(shadowSamplerEntry);
 
-    cameraBindGroupDesc.layout = bindGroupLayouts[0];
-
-    rhi::BindGroupHandle cameraBindGroup = rhi.CreateBindGroup(cameraBindGroupDesc);
-
     const glm::vec3 cameraPos(6.0f, 1.0f, 0.0f);
     const glm::vec3 cameraTarget(-0.5f, 1.0f, -0.3f);
     const glm::mat4 view = glm::lookAt(
@@ -509,11 +505,180 @@ int main()
         shadowPrepassBindGroups.push_back(rhi.CreateBindGroup(shadowPrepassBindGroupDesc));
     }
 
+    // AO depth prepass
+    // Create depth prepass texture and view
+    rhi::TextureDesc AODepthPrepassDesc;
+    AODepthPrepassDesc.width = w;
+    AODepthPrepassDesc.height = h;
+    AODepthPrepassDesc.format = rhi::TextureFormat::Depth32Float;
+    AODepthPrepassDesc.usage = rhi::TextureUsage::DepthStencil | rhi::TextureUsage::Sampled;
+    rhi::TextureHandle AODepthPrepassTexture = rhi.CreateTexture(AODepthPrepassDesc);
 
+    rhi::TextureViewDesc AODepthPrepassViewDesc;
+    AODepthPrepassViewDesc.format = rhi::TextureFormat::Depth32Float;
+    AODepthPrepassViewDesc.aspect = rhi::TextureAspect::Depth;
+    const rhi::TextureViewHandle AODepthPrepassView = rhi.CreateTextureView(AODepthPrepassViewDesc, AODepthPrepassTexture);
 
-    // we also want to create the appropriate bind group for the depth prepass.
-    rhi::BindGroupDesc depthBindGroupDesc;
+    // Create the result AOTexture for use in the main lighting pass
+    rhi::TextureDesc AOResultDesc;
+    AOResultDesc.width = w;
+    AOResultDesc.height = h;
+    AOResultDesc.format = rhi::TextureFormat::R32Float;
+    AOResultDesc.usage = rhi::TextureUsage::Sampled | rhi::TextureUsage::Storage;
+    rhi::TextureHandle AOResultTexture = rhi.CreateTexture(AOResultDesc);
 
+    rhi::TextureViewDesc AOResultViewDesc;
+    AOResultViewDesc.format = rhi::TextureFormat::R32Float;
+    const rhi::TextureViewHandle AOResultView = rhi.CreateTextureView(AOResultViewDesc, AOResultTexture);
+
+    // the main lighting pass samples the AO result
+    rhi::BindGroupEntry AOResultEntry;
+    AOResultEntry.binding = 5;
+    AOResultEntry.textureView = AOResultView;
+    cameraBindGroupDesc.entries.push_back(AOResultEntry);
+
+    cameraBindGroupDesc.layout = bindGroupLayouts[0];
+    rhi::BindGroupHandle cameraBindGroup = rhi.CreateBindGroup(cameraBindGroupDesc);
+
+    // Create the buffer for the camera data
+    rhi::BufferDesc AOCameraBufferDesc;
+    AOCameraBufferDesc.size = sizeof(ShadowPrepassUBO);
+    AOCameraBufferDesc.usage = rhi::BufferUsage::Uniform;
+    AOCameraBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+    rhi::BufferHandle AOCameraBuffer = rhi.CreateBuffer(AOCameraBufferDesc);
+
+    ShadowPrepassUBO AOPrepassData{};
+    AOPrepassData.lightViewProjMatrix = cameraData.viewProjMatrix;
+    rhi.WriteBuffer(AOCameraBuffer, &AOPrepassData, sizeof(ShadowPrepassUBO));
+
+    // Create the bind group for the camera
+    rhi::BindGroupDesc AOcameraBindGroupDesc;
+    AOcameraBindGroupDesc.layout = prepassBindGroupLayouts[0];
+    rhi::BindGroupEntry AOcameraEntry;
+    AOcameraEntry.buffer = AOCameraBuffer;
+    AOcameraEntry.binding = 0;
+    AOcameraBindGroupDesc.entries.push_back(AOcameraEntry);
+    const rhi::BindGroupHandle AOcameraBindGroup = rhi.CreateBindGroup(AOcameraBindGroupDesc);
+
+    // AO compute pipeline
+    rhi::ShaderSource AOComputeSource;
+    AOComputeSource.path = shaderDir / "ssao.comp.hlsl";
+    AOComputeSource.stage = rhi::ShaderStageFlags::Compute;
+    AOComputeSource.entryPoint = "main";
+    const rhi::ShaderModuleHandle AOComputeShader = rhi.CompileShader(AOComputeSource);
+
+    std::vector<rhi::ShaderReflection> AOReflections;
+    AOReflections.push_back(rhi.GetShaderModule(AOComputeShader)->reflection);
+
+    auto AOBindGroupLayoutDescs = rhi::BuildBindGroupLayoutDescs(AOReflections);
+
+    std::sort(AOBindGroupLayoutDescs.begin(), AOBindGroupLayoutDescs.end(),
+        [](const rhi::BindGroupLayoutDesc& a, const rhi::BindGroupLayoutDesc& b) {
+            return a.shaderBindings[0].set < b.shaderBindings[0].set;
+        });
+
+    std::vector<rhi::BindGroupLayoutHandle> AOBindGroupLayouts;
+    rhi::PipelineLayoutDesc AOLayoutDesc;
+
+    for (const auto &desc : AOBindGroupLayoutDescs) {
+        rhi::BindGroupLayoutHandle handle = rhi.CreateBindGroupLayout(desc);
+        AOBindGroupLayouts.push_back(handle);
+        AOLayoutDesc.layouts.push_back(handle);
+    }
+
+    rhi::PipelineLayoutHandle AOLayout = rhi.CreatePipelineLayout(AOLayoutDesc);
+
+    rhi::ComputePipelineDesc AOPipelineDesc;
+    AOPipelineDesc.layout = AOLayout;
+    AOPipelineDesc.computeShader = AOComputeShader;
+    auto AOPipeline = rhi.CreateComputePipeline(AOPipelineDesc);
+
+    rhi::BufferDesc AOUBOBufferDesc;
+    AOUBOBufferDesc.size = sizeof(AOUBO);
+    AOUBOBufferDesc.usage = rhi::BufferUsage::Uniform;
+    AOUBOBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+    rhi::BufferHandle AOUBOBuffer = rhi.CreateBuffer(AOUBOBufferDesc);
+
+    AOUBO AOData{};
+    AOData.invProjection = glm::inverse(proj);
+    AOData.resolution = glm::vec2(static_cast<float>(w), static_cast<float>(h));
+    AOData.radius = 0.5f;
+    AOData.strength = 1.5f;
+    rhi.WriteBuffer(AOUBOBuffer, &AOData, sizeof(AOUBO));
+
+    rhi::BindGroupDesc AOBindGroupDesc;
+    AOBindGroupDesc.layout = AOBindGroupLayouts[0];
+
+    rhi::BindGroupEntry AOUBOEntry;
+    AOUBOEntry.binding = 0;
+    AOUBOEntry.buffer = AOUBOBuffer;
+    AOBindGroupDesc.entries.push_back(AOUBOEntry);
+
+    rhi::BindGroupEntry AODepthEntry;
+    AODepthEntry.binding = 1;
+    AODepthEntry.textureView = AODepthPrepassView;
+    AOBindGroupDesc.entries.push_back(AODepthEntry);
+
+    rhi::BindGroupEntry AOOutputEntry;
+    AOOutputEntry.binding = 2;
+    AOOutputEntry.textureView = AOResultView;
+    AOBindGroupDesc.entries.push_back(AOOutputEntry);
+
+    const rhi::BindGroupHandle AOBindGroup = rhi.CreateBindGroup(AOBindGroupDesc);
+
+    // AO debug view pipeline
+    rhi::ShaderSource AODebugVSSource;
+    AODebugVSSource.path = shaderDir / "ao_debug.vert.hlsl";
+    AODebugVSSource.stage = rhi::ShaderStageFlags::Vertex;
+    AODebugVSSource.entryPoint = "main";
+    const rhi::ShaderModuleHandle AODebugVS = rhi.CompileShader(AODebugVSSource);
+
+    rhi::ShaderSource AODebugFSSource;
+    AODebugFSSource.path = shaderDir / "ao_debug.frag.hlsl";
+    AODebugFSSource.stage = rhi::ShaderStageFlags::Fragment;
+    AODebugFSSource.entryPoint = "main";
+    const rhi::ShaderModuleHandle AODebugFS = rhi.CompileShader(AODebugFSSource);
+
+    std::vector<rhi::ShaderReflection> AODebugReflections;
+    AODebugReflections.push_back(rhi.GetShaderModule(AODebugVS)->reflection);
+    AODebugReflections.push_back(rhi.GetShaderModule(AODebugFS)->reflection);
+
+    auto AODebugBindGroupLayoutDescs = rhi::BuildBindGroupLayoutDescs(AODebugReflections);
+
+    std::sort(AODebugBindGroupLayoutDescs.begin(), AODebugBindGroupLayoutDescs.end(),
+        [](const rhi::BindGroupLayoutDesc& a, const rhi::BindGroupLayoutDesc& b) {
+            return a.shaderBindings[0].set < b.shaderBindings[0].set;
+        });
+
+    std::vector<rhi::BindGroupLayoutHandle> AODebugBindGroupLayouts;
+    rhi::PipelineLayoutDesc AODebugLayoutDesc;
+
+    for (const auto& desc : AODebugBindGroupLayoutDescs) {
+        rhi::BindGroupLayoutHandle handle = rhi.CreateBindGroupLayout(desc);
+        AODebugBindGroupLayouts.push_back(handle);
+        AODebugLayoutDesc.layouts.push_back(handle);
+    }
+
+    rhi::PipelineLayoutHandle AODebugLayout = rhi.CreatePipelineLayout(AODebugLayoutDesc);
+
+    rhi::GraphicsPipelineDesc AODebugPipelineDesc;
+    AODebugPipelineDesc.layout = AODebugLayout;
+    AODebugPipelineDesc.vertexShader = AODebugVS;
+    AODebugPipelineDesc.fragmentShader = AODebugFS;
+    AODebugPipelineDesc.colorTargets.push_back({ .format = rhi::TextureFormat::RGBA8Unorm });
+    auto AODebugPipeline = rhi.CreateGraphicsPipeline(AODebugPipelineDesc);
+
+    rhi::BindGroupDesc AODebugBindGroupDesc;
+    AODebugBindGroupDesc.layout = AODebugBindGroupLayouts[0];
+
+    rhi::BindGroupEntry AODebugTextureEntry;
+    AODebugTextureEntry.binding = 0;
+    AODebugTextureEntry.textureView = AOResultView;
+    AODebugBindGroupDesc.entries.push_back(AODebugTextureEntry);
+
+    const rhi::BindGroupHandle AODebugBindGroup = rhi.CreateBindGroup(AODebugBindGroupDesc);
+
+    bool showAO = false;
 
     while (!glfwWindowShouldClose(window)) {
         auto frameStart = std::chrono::steady_clock::now();
@@ -530,6 +695,33 @@ int main()
         }
 
         auto cmd = rhi.BeginCommandList();
+
+        // AO depth prepass
+        rhi::RenderPassDesc AODepthPrepassPass{};
+        AODepthPrepassPass.depth.enabled = true;
+        AODepthPrepassPass.depth.view = AODepthPrepassView;
+        AODepthPrepassPass.depth.clearDepth = true;
+        AODepthPrepassPass.depth.clearDepthValue = 1.0f;
+        rhi.BeginRenderPass(cmd, AODepthPrepassPass);
+        rhi.SetPipeline(cmd, shadowPrepassPipeline);
+        rhi.SetViewport(cmd, 0, 0, w, h);
+        rhi.SetScissor(cmd, 0, 0, w, h);
+        rhi.SetBindGroup(cmd, 0, AOcameraBindGroup);
+        rhi.SetVertexBuffer(cmd, 0, model.vertexBuffer);
+        rhi.SetIndexBuffer(cmd, model.indexBuffer, rhi::IndexFormat::Uint32);
+        for (size_t d = 0; d < model.drawables.size(); ++d) {
+            const auto& submesh = model.primitivesList[model.drawables[d].submeshIdx];
+            rhi.SetBindGroup(cmd, 1, modelBindGroups[d]);
+            rhi.DrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.baseVertex, 0);
+        }
+        rhi.EndPass(cmd);
+
+        // The AO Pass itself
+        rhi.BeginComputePass(cmd);
+        rhi.SetPipeline(cmd, AOPipeline);
+        rhi.SetBindGroup(cmd, 0, AOBindGroup);
+        rhi.Dispatch(cmd, (w + 7) / 8, (h + 7) / 8, 1);
+        rhi.EndPass(cmd);
 
         // shadow prepass: one depth-only pass per shadow-casting light
         for (size_t s = 0; s < shadowPrepassBindGroups.size(); ++s) {
@@ -553,6 +745,7 @@ int main()
             rhi.EndPass(cmd);
         }
 
+        // lighting pass
         rhi::RenderPassDesc imagepass{};
         imagepass.swapchain = swapchain;
         imagepass.imageIndex = acquired.imageIndex;
@@ -581,6 +774,24 @@ int main()
 
         rhi.EndPass(cmd);
 
+        if (showAO) {
+            rhi::RenderPassDesc aodebugpass{};
+            aodebugpass.swapchain = swapchain;
+            aodebugpass.imageIndex = acquired.imageIndex;
+            aodebugpass.colors.push_back({
+                .useSwapchain = true,
+                .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
+                .clear = true
+            });
+            rhi.BeginRenderPass(cmd, aodebugpass);
+            rhi.SetPipeline(cmd, AODebugPipeline);
+            rhi.SetViewport(cmd, 0, 0, (float)w, (float)h);
+            rhi.SetScissor(cmd, 0, 0, w, h);
+            rhi.SetBindGroup(cmd, 0, AODebugBindGroup);
+            rhi.Draw(cmd, 3, 1, 0, 0);
+            rhi.EndPass(cmd);
+        }
+
         // Screen-space UI pass on the same swapchain image, then submit both.
         imgui.NewFrame(deltaTime, static_cast<uint32_t>(fbw), static_cast<uint32_t>(fbh));
 
@@ -589,6 +800,7 @@ int main()
             ImGui::Text("Drawables: %d", static_cast<int>(model.drawables.size()));
             ImGui::Text("Frame time: %.2f ms (%.1f FPS)", deltaTime * 1000.0, deltaTime > 0.0 ? 1.0 / deltaTime : 0.0);
             ImGui::Text("Lights: %d | Shadows: %d", lightCount, shadowCount);
+            ImGui::Checkbox("Show AO", &showAO);
         }
         ImGui::End();
 
