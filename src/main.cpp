@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iostream>
 
@@ -13,7 +14,9 @@
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#include "imgui.h"
 #include "importer/import.h"
+#include "imgui_backend.h"
 #include "renderer/structs.h"
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -129,8 +132,10 @@ int main()
 
     rhi::SurfaceHandle surface = rhi.CreateSurface(surfaceDesc);
 
-    int w,h;
+    int w, h;
     glfwGetWindowSize(window, &w, &h);
+    int fbw, fbh;
+    glfwGetFramebufferSize(window, &fbw, &fbh);
 
     rhi::SwapchainDesc swapchainDesc;
     swapchainDesc.surface = surface;
@@ -139,6 +144,15 @@ int main()
     swapchainDesc.format = rhi::TextureFormat::RGBA8Unorm;
 
     auto swapchain = rhi.CreateSwapchain(swapchainDesc);
+
+    ImGuiRenderer imgui;
+    if (!imgui.Init(rhi, window, shaderDir, swapchainDesc.format,
+                    static_cast<uint32_t>(fbw), static_cast<uint32_t>(fbh),
+                    swapchain)) {
+        std::cerr << "Failed to initialize ImGui.\n";
+        return 1;
+    }
+    auto lastFrameTime = std::chrono::steady_clock::now();
 
     rhi::TextureDesc depthDesc;
     depthDesc.width = w;
@@ -263,16 +277,11 @@ int main()
 
     LightData lightData{};
 
-    // A single directional "sun". dirRadius.xyz is the direction the light
-    // TRAVELS, so the sun sits at -dirRadius. A low, raking angle throws long
-    // shadows that reach across the courtyard instead of a short pool.
-    lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(-0.60f, -0.30f, -0.72f)), 0.0f);
+    lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(0.0f, -1.0f, 0.0f)), 0.0f);
     lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.93f, 0.82f, 2.4f);
 
     uint32_t lightCount = 1;
 
-    // colored point lights tucked into the courtyard so they glow inside the
-    // sun's shadow. w = type (1 = point), dirRadius.w = range.
     auto addPointLight = [&](glm::vec3 position, glm::vec3 color, float intensity, float range) {
         Light& light = lightData.lights[lightCount++];
         light.posType        = glm::vec4(position, 1.0f);
@@ -509,6 +518,11 @@ int main()
 
 
     while (!glfwWindowShouldClose(window)) {
+        auto frameStart = std::chrono::steady_clock::now();
+        const double deltaTime = std::chrono::duration<double>(
+            frameStart - lastFrameTime).count();
+        lastFrameTime = frameStart;
+
         auto acquired = rhi.AcquireNextImage(swapchain);
 
         if (acquired.status != rhi::AcquireStatus::Success
@@ -568,11 +582,26 @@ int main()
         }
 
         rhi.EndPass(cmd);
+
+        // Screen-space UI pass on the same swapchain image, then submit both.
+        imgui.NewFrame(deltaTime, static_cast<uint32_t>(fbw), static_cast<uint32_t>(fbh));
+
+        ImGui::SetNextWindowPos(ImVec2(20, 20), ImGuiCond_FirstUseEver);
+        if (ImGui::Begin("Renderer", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Drawables: %d", static_cast<int>(model.drawables.size()));
+            ImGui::Text("Frame time: %.2f ms (%.1f FPS)", deltaTime * 1000.0, deltaTime > 0.0 ? 1.0 / deltaTime : 0.0);
+            ImGui::Text("Lights: %d | Shadows: %d", lightCount, shadowCount);
+        }
+        ImGui::End();
+
+        imgui.Render(rhi, cmd, acquired.imageIndex);
+
         rhi.Submit({&cmd, 1});
         rhi.Present(swapchain);
         glfwPollEvents();
     }
 
+    imgui.Shutdown(rhi);
     glfwTerminate();
     rhi.Shutdown();
     return 0;

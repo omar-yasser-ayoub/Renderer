@@ -23,6 +23,24 @@ set(GLM_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(GLM_BUILD_INSTALL OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/glm)
 
+# Dear ImGui: core + the GLFW platform backend only (input/events).
+# The rendering side lives in src/imgui_backend.cpp, built on the RHI,
+# so one backend file serves the Vulkan/DX12/WebGPU builds unchanged.
+add_library(imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_demo.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_glfw.cpp
+)
+target_include_directories(imgui
+    PUBLIC
+        third_party/imgui
+        third_party/imgui/backends
+)
+target_link_libraries(imgui PUBLIC glfw)
+
 # No examples/tests/docs/install from GLFW: just the library.
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
@@ -36,7 +54,11 @@ if(WIN32)
     target_link_libraries(glfw PUBLIC gdi32 user32 shell32)
 endif()
 
-add_executable(new_renderer src/main.cpp src/importer/import.cpp)
+add_executable(new_renderer
+    src/main.cpp
+    src/importer/import.cpp
+    src/imgui_backend.cpp
+)
 
 target_include_directories(new_renderer PRIVATE src)
 
@@ -57,6 +79,7 @@ target_link_libraries(new_renderer
         stb
         glm::glm
         glfw
+        imgui
 )
 
 # fastgltf's public headers pull in simdjson/simdutf headers
