@@ -183,7 +183,6 @@ float4 main(PSInput input) : SV_Target
     }
 
     lit += albedo * 0.15f * ao;
-    lit = lit / (lit + 1.0f);
-    lit = pow(lit, 1.0f / 2.2f);
+
     return float4(lit, albedoSample.a * baseColor.a);
 }

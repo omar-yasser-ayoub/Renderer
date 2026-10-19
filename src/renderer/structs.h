@@ -29,6 +29,14 @@ struct AOUBO {
     float strength;
 };
 
+struct BloomUBO {
+    glm::vec2 texelSize;
+    float threshold;
+    float knee;
+    float intensity;
+    float _pad[3];
+};
+
 constexpr uint32_t MAX_SHADOWS = 64;
 
 struct ShadowData {

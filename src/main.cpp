@@ -99,7 +99,7 @@ int main()
     rhi::PipelineLayoutHandle layout = rhi.CreatePipelineLayout(layoutDesc);
 
     rhi::ColorTarget colorTarget;
-    colorTarget.format = rhi::TextureFormat::RGBA8Unorm;
+    colorTarget.format = rhi::TextureFormat::RGBA16Float;
 
     rhi::GraphicsPipelineDesc pipelineDesc;
     pipelineDesc.layout = layout;
@@ -165,6 +165,19 @@ int main()
     depthViewDesc.format = rhi::TextureFormat::Depth32Float;
     depthViewDesc.aspect = rhi::TextureAspect::Depth;
     const rhi::TextureViewHandle depthView = rhi.CreateTextureView(depthViewDesc, depthTexture);
+
+    // HDR scene target: the main pass renders here, bloom post-processes it, and
+    // the composite pass resolves it to the swapchain.
+    rhi::TextureDesc sceneColorDesc;
+    sceneColorDesc.width = w;
+    sceneColorDesc.height = h;
+    sceneColorDesc.format = rhi::TextureFormat::RGBA16Float;
+    sceneColorDesc.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::Sampled;
+    rhi::TextureHandle sceneColorTexture = rhi.CreateTexture(sceneColorDesc);
+
+    rhi::TextureViewDesc sceneColorViewDesc;
+    sceneColorViewDesc.format = rhi::TextureFormat::RGBA16Float;
+    const rhi::TextureViewHandle sceneColorView = rhi.CreateTextureView(sceneColorViewDesc, sceneColorTexture);
 
     ModelData model = loadModel(rhi, (modelDir / "sponza/Sponza.gltf").string());
 
@@ -678,9 +691,157 @@ int main()
 
     const rhi::BindGroupHandle AODebugBindGroup = rhi.CreateBindGroup(AODebugBindGroupDesc);
 
+    // Bloom
+    const int bloomW = std::max(1, w / 2);
+    const int bloomH = std::max(1, h / 2);
+
+    rhi::TextureDesc bloomADesc;
+    bloomADesc.width = bloomW;
+    bloomADesc.height = bloomH;
+    bloomADesc.format = rhi::TextureFormat::RGBA16Float;
+    bloomADesc.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::Sampled;
+    rhi::TextureHandle bloomATexture = rhi.CreateTexture(bloomADesc);
+
+    rhi::TextureViewDesc bloomAViewDesc;
+    bloomAViewDesc.format = rhi::TextureFormat::RGBA16Float;
+    const rhi::TextureViewHandle bloomAView = rhi.CreateTextureView(bloomAViewDesc, bloomATexture);
+
+    rhi::TextureDesc bloomBDesc;
+    bloomBDesc.width = bloomW;
+    bloomBDesc.height = bloomH;
+    bloomBDesc.format = rhi::TextureFormat::RGBA16Float;
+    bloomBDesc.usage = rhi::TextureUsage::RenderTarget | rhi::TextureUsage::Sampled;
+    rhi::TextureHandle bloomBTexture = rhi.CreateTexture(bloomBDesc);
+
+    rhi::TextureViewDesc bloomBViewDesc;
+    bloomBViewDesc.format = rhi::TextureFormat::RGBA16Float;
+    const rhi::TextureViewHandle bloomBView = rhi.CreateTextureView(bloomBViewDesc, bloomBTexture);
+
+    const rhi::SamplerHandle bloomSampler = rhi.CreateSampler({});
+
+    auto createBloomUBO = [&](const BloomUBO& data) {
+        rhi::BufferDesc desc;
+        desc.size = sizeof(BloomUBO);
+        desc.usage = rhi::BufferUsage::Uniform;
+        desc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
+        rhi::BufferHandle buffer = rhi.CreateBuffer(desc);
+        rhi.WriteBuffer(buffer, &data, sizeof(BloomUBO));
+        return buffer;
+    };
+
+    BloomUBO brightData{};
+    brightData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+    brightData.threshold = 0.5f;
+    brightData.knee = 0.5f;
+    brightData.intensity = 1.0f;
+    const rhi::BufferHandle brightUBO = createBloomUBO(brightData);
+
+    BloomUBO blurHData{};
+    blurHData.texelSize = glm::vec2(1.0f / static_cast<float>(bloomW), 0.0f);
+    const rhi::BufferHandle blurHUBO = createBloomUBO(blurHData);
+
+    BloomUBO blurVData{};
+    blurVData.texelSize = glm::vec2(0.0f, 1.0f / static_cast<float>(bloomH));
+    const rhi::BufferHandle blurVUBO = createBloomUBO(blurVData);
+
+    BloomUBO compositeData{};
+    compositeData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
+    compositeData.intensity = 2.0f;
+    const rhi::BufferHandle compositeUBO = createBloomUBO(compositeData);
+
+    rhi::ShaderSource fullscreenVSSource;
+    fullscreenVSSource.path = shaderDir / "fullscreen.vert.hlsl";
+    fullscreenVSSource.stage = rhi::ShaderStageFlags::Vertex;
+    fullscreenVSSource.entryPoint = "main";
+    const rhi::ShaderModuleHandle fullscreenVS = rhi.CompileShader(fullscreenVSSource);
+
+    struct FullscreenPass {
+        std::vector<rhi::BindGroupLayoutHandle> layouts;
+        rhi::PipelineLayoutHandle layout;
+        rhi::GraphicsPipelineHandle pipeline;
+    };
+
+    auto createFullscreenPass = [&](const std::filesystem::path& fragPath,
+                                    rhi::TextureFormat format) {
+        rhi::ShaderSource fragSource;
+        fragSource.path = fragPath;
+        fragSource.stage = rhi::ShaderStageFlags::Fragment;
+        fragSource.entryPoint = "main";
+        const rhi::ShaderModuleHandle frag = rhi.CompileShader(fragSource);
+
+        std::vector<rhi::ShaderReflection> reflections;
+        reflections.push_back(rhi.GetShaderModule(fullscreenVS)->reflection);
+        reflections.push_back(rhi.GetShaderModule(frag)->reflection);
+
+        auto layoutDescs = rhi::BuildBindGroupLayoutDescs(reflections);
+
+        std::sort(layoutDescs.begin(), layoutDescs.end(),
+            [](const rhi::BindGroupLayoutDesc& a, const rhi::BindGroupLayoutDesc& b) {
+                return a.shaderBindings[0].set < b.shaderBindings[0].set;
+            });
+
+        FullscreenPass pass;
+        rhi::PipelineLayoutDesc layoutDesc;
+
+        for (const auto& desc : layoutDescs) {
+            rhi::BindGroupLayoutHandle handle = rhi.CreateBindGroupLayout(desc);
+            pass.layouts.push_back(handle);
+            layoutDesc.layouts.push_back(handle);
+        }
+
+        pass.layout = rhi.CreatePipelineLayout(layoutDesc);
+
+        rhi::GraphicsPipelineDesc pipelineDesc;
+        pipelineDesc.layout = pass.layout;
+        pipelineDesc.vertexShader = fullscreenVS;
+        pipelineDesc.fragmentShader = frag;
+        pipelineDesc.colorTargets.push_back({ .format = format });
+        pass.pipeline = rhi.CreateGraphicsPipeline(pipelineDesc);
+
+        return pass;
+    };
+
+    FullscreenPass bloomBrightPass = createFullscreenPass(shaderDir / "bloom_bright.frag.hlsl", rhi::TextureFormat::RGBA16Float);
+    FullscreenPass bloomBlurPass = createFullscreenPass(shaderDir / "bloom_blur.frag.hlsl", rhi::TextureFormat::RGBA16Float);
+    FullscreenPass bloomCompositePass = createFullscreenPass(shaderDir / "bloom_composite.frag.hlsl", rhi::TextureFormat::RGBA8Unorm);
+
+    auto createFullscreenBindGroup = [&](const rhi::BindGroupLayoutHandle layout,
+                                         rhi::BufferHandle ubo,
+                                         const std::vector<rhi::TextureViewHandle>& textures,
+                                         rhi::SamplerHandle sampler) {
+        rhi::BindGroupDesc desc;
+        desc.layout = layout;
+
+        rhi::BindGroupEntry uboEntry;
+        uboEntry.binding = 0;
+        uboEntry.buffer = ubo;
+        desc.entries.push_back(uboEntry);
+
+        for (size_t i = 0; i < textures.size(); ++i) {
+            rhi::BindGroupEntry textureEntry;
+            textureEntry.binding = static_cast<uint32_t>(i + 1);
+            textureEntry.textureView = textures[i];
+            desc.entries.push_back(textureEntry);
+        }
+
+        rhi::BindGroupEntry samplerEntry;
+        samplerEntry.binding = static_cast<uint32_t>(textures.size() + 1);
+        samplerEntry.sampler = sampler;
+        desc.entries.push_back(samplerEntry);
+
+        return rhi.CreateBindGroup(desc);
+    };
+
+    const rhi::BindGroupHandle bloomBrightBindGroup = createFullscreenBindGroup(bloomBrightPass.layouts[0], brightUBO, { sceneColorView }, bloomSampler);
+    const rhi::BindGroupHandle bloomBlurHBindGroup = createFullscreenBindGroup(bloomBlurPass.layouts[0], blurHUBO, { bloomAView }, bloomSampler);
+    const rhi::BindGroupHandle bloomBlurVBindGroup = createFullscreenBindGroup(bloomBlurPass.layouts[0], blurVUBO, { bloomBView }, bloomSampler);
+    const rhi::BindGroupHandle bloomCompositeBindGroup = createFullscreenBindGroup(bloomCompositePass.layouts[0], compositeUBO, { sceneColorView, bloomAView }, bloomSampler);
+
     bool showAO = false;
     bool enableAO = true;
     bool lastEnableAO = enableAO;
+    bool enableBloom = true;
+    bool lastEnableBloom = enableBloom;
 
     while (!glfwWindowShouldClose(window)) {
         auto frameStart = std::chrono::steady_clock::now();
@@ -754,12 +915,10 @@ int main()
             rhi.EndPass(cmd);
         }
 
-        // lighting pass
+        // lighting pass (into the HDR scene target)
         rhi::RenderPassDesc imagepass{};
-        imagepass.swapchain = swapchain;
-        imagepass.imageIndex = acquired.imageIndex;
         imagepass.colors.push_back({
-            .useSwapchain = true,
+            .view = sceneColorView,
             .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
             .clear = true
         });
@@ -782,6 +941,82 @@ int main()
         }
 
         rhi.EndPass(cmd);
+
+        if (enableBloom != lastEnableBloom) {
+            compositeData.intensity = enableBloom ? 2.0f : 0.0f;
+            rhi.WriteBuffer(compositeUBO, &compositeData, sizeof(BloomUBO));
+            lastEnableBloom = enableBloom;
+        }
+
+        // bloom: bright pass into half-res A
+        {
+            rhi::RenderPassDesc pass{};
+            pass.colors.push_back({
+                .view = bloomAView,
+                .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
+                .clear = true
+            });
+            rhi.BeginRenderPass(cmd, pass);
+            rhi.SetPipeline(cmd, bloomBrightPass.pipeline);
+            rhi.SetViewport(cmd, 0, 0, (float)bloomW, (float)bloomH);
+            rhi.SetScissor(cmd, 0, 0, bloomW, bloomH);
+            rhi.SetBindGroup(cmd, 0, bloomBrightBindGroup);
+            rhi.Draw(cmd, 3, 1, 0, 0);
+            rhi.EndPass(cmd);
+        }
+
+        // horizontal blur: A -> B
+        {
+            rhi::RenderPassDesc pass{};
+            pass.colors.push_back({
+                .view = bloomBView,
+                .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
+                .clear = true
+            });
+            rhi.BeginRenderPass(cmd, pass);
+            rhi.SetPipeline(cmd, bloomBlurPass.pipeline);
+            rhi.SetViewport(cmd, 0, 0, (float)bloomW, (float)bloomH);
+            rhi.SetScissor(cmd, 0, 0, bloomW, bloomH);
+            rhi.SetBindGroup(cmd, 0, bloomBlurHBindGroup);
+            rhi.Draw(cmd, 3, 1, 0, 0);
+            rhi.EndPass(cmd);
+        }
+
+        // vertical blur: B -> A
+        {
+            rhi::RenderPassDesc pass{};
+            pass.colors.push_back({
+                .view = bloomAView,
+                .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
+                .clear = true
+            });
+            rhi.BeginRenderPass(cmd, pass);
+            rhi.SetPipeline(cmd, bloomBlurPass.pipeline);
+            rhi.SetViewport(cmd, 0, 0, (float)bloomW, (float)bloomH);
+            rhi.SetScissor(cmd, 0, 0, bloomW, bloomH);
+            rhi.SetBindGroup(cmd, 0, bloomBlurVBindGroup);
+            rhi.Draw(cmd, 3, 1, 0, 0);
+            rhi.EndPass(cmd);
+        }
+
+        // composite scene + bloom (tonemapped) to the swapchain
+        {
+            rhi::RenderPassDesc pass{};
+            pass.swapchain = swapchain;
+            pass.imageIndex = acquired.imageIndex;
+            pass.colors.push_back({
+                .useSwapchain = true,
+                .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
+                .clear = true
+            });
+            rhi.BeginRenderPass(cmd, pass);
+            rhi.SetPipeline(cmd, bloomCompositePass.pipeline);
+            rhi.SetViewport(cmd, 0, 0, (float)w, (float)h);
+            rhi.SetScissor(cmd, 0, 0, w, h);
+            rhi.SetBindGroup(cmd, 0, bloomCompositeBindGroup);
+            rhi.Draw(cmd, 3, 1, 0, 0);
+            rhi.EndPass(cmd);
+        }
 
         if (showAO) {
             rhi::RenderPassDesc aodebugpass{};
@@ -811,6 +1046,7 @@ int main()
             ImGui::Text("Lights: %d | Shadows: %d", lightCount, shadowCount);
             ImGui::Checkbox("Enable AO", &enableAO);
             ImGui::Checkbox("Show AO texture", &showAO);
+            ImGui::Checkbox("Enable Bloom", &enableBloom);
         }
         ImGui::End();
 
