@@ -133,12 +133,13 @@ float4 main(PSInput input) : SV_Target
     N = PerturbNormal(input, N);
 
     float3 lit = 0;
+    float ao = AOTexture.Load(int3(input.position.xy, 0));
     for (uint i = 0; i < lightCount; ++i) {
         Light light = lights[i];
 
         if (lights[i].posType.w == 2) {
             //Ambient light
-            lit += light.colorIntensity.xyz * light.colorIntensity.w;
+            lit += light.colorIntensity.xyz * light.colorIntensity.w * ao;
             continue;
         }
 
@@ -181,7 +182,6 @@ float4 main(PSInput input) : SV_Target
         lit += (diffuse + specular) * radiance * NdotL * atten * shadow;
     }
 
-    float ao = AOTexture.Load(int3(input.position.xy, 0));
     lit += albedo * 0.15f * ao;
     lit = lit / (lit + 1.0f);
     lit = pow(lit, 1.0f / 2.2f);

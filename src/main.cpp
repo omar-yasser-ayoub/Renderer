@@ -679,6 +679,8 @@ int main()
     const rhi::BindGroupHandle AODebugBindGroup = rhi.CreateBindGroup(AODebugBindGroupDesc);
 
     bool showAO = false;
+    bool enableAO = true;
+    bool lastEnableAO = enableAO;
 
     while (!glfwWindowShouldClose(window)) {
         auto frameStart = std::chrono::steady_clock::now();
@@ -715,6 +717,13 @@ int main()
             rhi.DrawIndexed(cmd, submesh.indexCount, 1, submesh.firstIndex, submesh.baseVertex, 0);
         }
         rhi.EndPass(cmd);
+
+        if (enableAO != lastEnableAO) {
+            // strength 0 makes the pass write 1.0 everywhere, i.e. no occlusion
+            AOData.strength = enableAO ? 1.5f : 0.0f;
+            rhi.WriteBuffer(AOUBOBuffer, &AOData, sizeof(AOUBO));
+            lastEnableAO = enableAO;
+        }
 
         // The AO Pass itself
         rhi.BeginComputePass(cmd);
@@ -800,7 +809,8 @@ int main()
             ImGui::Text("Drawables: %d", static_cast<int>(model.drawables.size()));
             ImGui::Text("Frame time: %.2f ms (%.1f FPS)", deltaTime * 1000.0, deltaTime > 0.0 ? 1.0 / deltaTime : 0.0);
             ImGui::Text("Lights: %d | Shadows: %d", lightCount, shadowCount);
-            ImGui::Checkbox("Show AO", &showAO);
+            ImGui::Checkbox("Enable AO", &enableAO);
+            ImGui::Checkbox("Show AO texture", &showAO);
         }
         ImGui::End();
 
