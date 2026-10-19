@@ -52,7 +52,11 @@ private:
 
     std::uint32_t m_FrameWidth = 0, m_FrameHeight = 0;
 
-    // Persistent scratch so per-frame copies don't allocate.
+    std::vector<std::size_t> m_ListVertexStarts;
+    std::vector<std::size_t> m_ListIndexStarts; // in indices
+    std::size_t m_VertexUploadBytes = 0;
+    std::size_t m_IndexUploadBytes = 0;         // 4-byte padded
+
     std::vector<std::uint8_t> m_VertexScratch, m_IndexScratch;
 
     bool UploadBuffers(RHI& rhi, const ImDrawData* drawData);

@@ -278,7 +278,7 @@ int main()
     LightData lightData{};
 
     lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(0.0f, -1.0f, 0.0f)), 0.0f);
-    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.93f, 0.82f, 2.4f);
+    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.93f, 0.82f, 3.4f);
 
     uint32_t lightCount = 1;
 
@@ -289,9 +289,7 @@ int main()
         light.colorIntensity = glm::vec4(color, intensity);
     };
 
-    addPointLight(glm::vec3( 0.0f, 3.0f,  0.0f), glm::vec3(1.00f, 0.20f, 0.65f), 1.0f, 16.0f); // hot pink
-    addPointLight(glm::vec3( 6.0f, 3.5f, -3.0f), glm::vec3(0.55f, 0.25f, 1.00f), 1.0f, 16.0f); // purple
-    addPointLight(glm::vec3(-6.0f, 3.5f,  3.0f), glm::vec3(0.80f, 0.30f, 1.00f), 1.0f, 16.0f); // violet
+    addPointLight(glm::vec3( 0.0f, 3.0f,  0.0f), glm::vec3(0.3f, 0.20f, 0.85f), 1.0f, 16.0f); // hot pink
 
     lightData.lightCount = lightCount;
 

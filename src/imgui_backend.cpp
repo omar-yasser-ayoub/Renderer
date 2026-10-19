@@ -190,21 +190,41 @@ void ImGuiRenderer::NewFrame(double deltaTimeSeconds, std::uint32_t frameWidth,
 
 bool ImGuiRenderer::UploadBuffers(RHI& rhi, const ImDrawData* drawData)
 {
-    const std::size_t vtxCount = static_cast<std::size_t>(drawData->TotalVtxCount);
-    const std::size_t idxCount = static_cast<std::size_t>(drawData->TotalIdxCount);
+    // WebGPU only maps/copies/binds at 4-byte granularity: pad the final
+    // upload sizes, and start every draw list's index data on a 4-byte
+    // boundary (index data is 2 bytes per index, so round up to even counts).
+    // Vertex footprints (20 bytes/vertex) are inherently 4-byte aligned.
+    constexpr std::size_t kIndexAlign = 2; // in indices
 
-    if (m_VertexCapacity < vtxCount || m_IndexCapacity < idxCount) {
+    std::size_t vtxTotal = 0, idxTotal = 0;
+    m_ListVertexStarts.resize(static_cast<std::size_t>(drawData->CmdListsCount));
+    m_ListIndexStarts.resize(static_cast<std::size_t>(drawData->CmdListsCount));
+    for (int l = 0; l < drawData->CmdListsCount; ++l) {
+        const ImDrawList* cmdList = drawData->CmdLists[l];
+        m_ListVertexStarts[l] = vtxTotal;
+        vtxTotal += static_cast<std::size_t>(cmdList->VtxBuffer.Size);
+        m_ListIndexStarts[l] = idxTotal;
+        idxTotal = (idxTotal + static_cast<std::size_t>(cmdList->IdxBuffer.Size)
+            + kIndexAlign - 1) & ~(kIndexAlign - 1);
+    }
+
+    const std::size_t vtxByteTotal = (vtxTotal * kVertexStride + 3) & ~std::size_t(3);
+    const std::size_t idxByteGapTotal = idxTotal * sizeof(ImDrawIdx);
+    m_IndexUploadBytes = (idxByteGapTotal + 3) & ~std::size_t(3);
+
+    // All-or-nothing recreation: other ring slots can still be in flight.
+    if (m_VertexCapacity < vtxTotal || m_IndexCapacity < idxTotal) {
         m_VertexCapacity = std::max<std::size_t>(
-            vtxCount, m_VertexCapacity ? m_VertexCapacity * 2 : 8192);
+            vtxTotal, m_VertexCapacity ? m_VertexCapacity * 2 : 8192);
         m_IndexCapacity = std::max<std::size_t>(
-            idxCount, m_IndexCapacity ? m_IndexCapacity * 2 : 16384);
+            idxTotal, m_IndexCapacity ? m_IndexCapacity * 2 : 16384);
 
         rhi::BufferDesc vbDesc;
-        vbDesc.size = m_VertexCapacity * kVertexStride;
+        vbDesc.size = (m_VertexCapacity * kVertexStride + 3) & ~std::size_t(3);
         vbDesc.usage = rhi::BufferUsage::Vertex | rhi::BufferUsage::CopyDst;
         vbDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
         rhi::BufferDesc ibDesc;
-        ibDesc.size = m_IndexCapacity * sizeof(ImDrawIdx);
+        ibDesc.size = (m_IndexCapacity * sizeof(ImDrawIdx) + 3) & ~std::size_t(3);
         ibDesc.usage = rhi::BufferUsage::Index | rhi::BufferUsage::CopyDst;
         ibDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
 
@@ -223,21 +243,26 @@ bool ImGuiRenderer::UploadBuffers(RHI& rhi, const ImDrawData* drawData)
     rhi::BufferHandle vb = m_VertexBuffers[m_RingSlot];
     rhi::BufferHandle ib = m_IndexBuffers[m_RingSlot];
 
-    m_VertexScratch.resize(vtxCount * kVertexStride);
-    m_IndexScratch.resize(idxCount * sizeof(ImDrawIdx));
+    m_VertexScratch.resize(vtxByteTotal);
+    m_IndexScratch.resize(idxByteGapTotal);
     std::size_t vtxByte = 0, idxByte = 0;
     for (int l = 0; l < drawData->CmdListsCount; ++l) {
         const ImDrawList* cmdList = drawData->CmdLists[l];
         std::memcpy(m_VertexScratch.data() + vtxByte, cmdList->VtxBuffer.Data,
             static_cast<std::size_t>(cmdList->VtxBuffer.Size) * kVertexStride);
-        std::memcpy(m_IndexScratch.data() + idxByte, cmdList->IdxBuffer.Data,
-            static_cast<std::size_t>(cmdList->IdxBuffer.Size) * sizeof(ImDrawIdx));
         vtxByte += static_cast<std::size_t>(cmdList->VtxBuffer.Size) * kVertexStride;
-        idxByte += static_cast<std::size_t>(cmdList->IdxBuffer.Size) * sizeof(ImDrawIdx);
+        // Zero the alignment gap so padded bytes are defined.
+        const std::size_t listStart = m_ListIndexStarts[l] * sizeof(ImDrawIdx);
+        if (listStart > idxByte) {
+            std::memset(m_IndexScratch.data() + idxByte, 0, listStart - idxByte);
+        }
+        std::memcpy(m_IndexScratch.data() + listStart, cmdList->IdxBuffer.Data,
+            static_cast<std::size_t>(cmdList->IdxBuffer.Size) * sizeof(ImDrawIdx));
+        idxByte = listStart + static_cast<std::size_t>(cmdList->IdxBuffer.Size) * sizeof(ImDrawIdx);
     }
 
-    rhi.WriteBuffer(vb, m_VertexScratch.data(), m_VertexScratch.size());
-    rhi.WriteBuffer(ib, m_IndexScratch.data(), m_IndexScratch.size());
+    rhi.WriteBuffer(vb, m_VertexScratch.data(), vtxByteTotal);
+    rhi.WriteBuffer(ib, m_IndexScratch.data(), m_IndexUploadBytes);
     return true;
 }
 
@@ -276,12 +301,11 @@ void ImGuiRenderer::Render(RHI& rhi, rhi::CommandListHandle cmd,
     rhi.SetViewport(cmd, 0, 0, drawData->DisplaySize.x, drawData->DisplaySize.y);
     rhi.SetScissor(cmd, 0, 0, m_FrameWidth, m_FrameHeight);
 
-    std::size_t listVtxOffset = 0, listIdxOffset = 0;
     for (int l = 0; l < drawData->CmdListsCount; ++l) {
         const ImDrawList* cmdList = drawData->CmdLists[l];
-        rhi.SetVertexBuffer(cmd, 0, vb, listVtxOffset * kVertexStride);
+        rhi.SetVertexBuffer(cmd, 0, vb, m_ListVertexStarts[l] * kVertexStride);
         rhi.SetIndexBuffer(cmd, ib, rhi::IndexFormat::Uint16,
-            listIdxOffset * sizeof(ImDrawIdx));
+            m_ListIndexStarts[l] * sizeof(ImDrawIdx));
 
         for (int c = 0; c < cmdList->CmdBuffer.Size; ++c) {
             const ImDrawCmd& drawCmd = cmdList->CmdBuffer[c];
@@ -307,12 +331,9 @@ void ImGuiRenderer::Render(RHI& rhi, rhi::CommandListHandle cmd,
                 static_cast<std::uint32_t>(clipW),
                 static_cast<std::uint32_t>(clipH));
             rhi.DrawIndexed(cmd, drawCmd.ElemCount, 1,
-                static_cast<std::uint32_t>(drawCmd.IdxOffset - listIdxOffset),
-                static_cast<std::int32_t>(drawCmd.VtxOffset - listVtxOffset), 0);
+                static_cast<std::uint32_t>(drawCmd.IdxOffset - m_ListIndexStarts[l]),
+                static_cast<std::int32_t>(drawCmd.VtxOffset - m_ListVertexStarts[l]), 0);
         }
-
-        listVtxOffset += static_cast<std::size_t>(cmdList->VtxBuffer.Size);
-        listIdxOffset += static_cast<std::size_t>(cmdList->IdxBuffer.Size);
     }
 
     rhi.EndPass(cmd);
