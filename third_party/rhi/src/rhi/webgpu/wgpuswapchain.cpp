@@ -61,7 +61,9 @@ rhi::SwapchainHandle WebGPURHI::CreateSwapchain(const rhi::SwapchainDesc& desc)
     }
 
     wgpu::TextureUsage usage = toWebGPU(desc.usage) | wgpu::TextureUsage::RenderAttachment;
-    usage &= caps.usages;
+    if (caps.usages != wgpu::TextureUsage::None) {
+        usage &= caps.usages;
+    }
     if ((usage & wgpu::TextureUsage::RenderAttachment) == wgpu::TextureUsage::None) {
         std::cerr << "WebGPU surface does not support render attachment usage.\n";
         return {};
@@ -196,7 +198,10 @@ void WebGPURHI::Present(rhi::SwapchainHandle handle)
     if (!data.surface || !data.currentTexture) {
         return;
     }
+#if defined(__EMSCRIPTEN__)
+#else
     data.surface.Present();
+#endif
     data.currentTexture = {};
     data.currentView = {};
 }

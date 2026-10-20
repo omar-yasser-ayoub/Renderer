@@ -145,55 +145,16 @@ void WebGPURHI::WriteBuffer(rhi::BufferHandle handle, const void* data, std::siz
         return;
     }
 
-    if (NeedsStagingWrite(handle.desc)) {
-        wgpu::BufferDescriptor stagingDesc{};
-        stagingDesc.size = size;
-        stagingDesc.usage = wgpu::BufferUsage::MapWrite | wgpu::BufferUsage::CopySrc;
-        wgpu::Buffer staging = m_Device.CreateBuffer(&stagingDesc);
-        if (!staging) {
-            printf("[RHI] Failed to create WebGPU staging buffer\n");
-            return;
-        }
-        bool success = false;
-        auto future = staging.MapAsync(
-            wgpu::MapMode::Write,
-            0,
-            size,
-            wgpu::CallbackMode::WaitAnyOnly,
-            [&](wgpu::MapAsyncStatus status, wgpu::StringView message) {
-                if (status != wgpu::MapAsyncStatus::Success) {
-                    printf("[RHI] MapBuffer failed: %.*s\n",
-                           static_cast<int>(message.length),
-                           message.data ? message.data : "");
-                    return;
-                }
-                success = true;
-            });
-        m_Instance.WaitAny(future, UINT64_MAX);
-        if (!success) {
-            return;
-        }
-
-        void* mapped = staging.GetMappedRange(0, size);
-        if (!mapped) {
-            printf("[RHI] Failed to get mapped WebGPU staging range\n");
-            staging.Unmap();
-            staging.Destroy();
-            return;
-        }
-        std::memcpy(mapped, data, size);
-        staging.Unmap();
-
-        wgpu::CommandEncoderDescriptor encoderDesc{};
-        wgpu::CommandEncoder encoder = m_Device.CreateCommandEncoder(&encoderDesc);
-        encoder.CopyBufferToBuffer(staging, 0, m_Buffers[handle.id], offset, size);
-        wgpu::CommandBuffer commands = encoder.Finish();
-        m_Queue.Submit(1, &commands);
-        staging.Destroy();
-        return;
-    }
-
     if (handle.desc.memoryUsage == rhi::MemoryUsage::CpuToGpu) {
+        if (NeedsStagingWrite(handle.desc)) {
+            // The buffer has COPY_DST: queue.WriteBuffer copies the data in
+            // queue order, i.e. after any work already submitted and before
+            // the next submit. No staging buffer and no mapping wait.
+            m_Queue.WriteBuffer(m_Buffers[handle.id], offset, data, size);
+            return;
+        }
+
+        // A mappable buffer: write through its mapped range.
         wgpu::Buffer mappedBuffer = m_Buffers[handle.id];
         bool success = false;
         auto future = mappedBuffer.MapAsync(

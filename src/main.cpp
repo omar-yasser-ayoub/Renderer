@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <filesystem>
+#include <functional>
 #include <iostream>
 
 #include "rhi/resources/bindgroup.h"
@@ -12,18 +13,122 @@
 #include "rhi/resources/swapchain.h"
 #include "rhi/resources/texture.h"
 #include "rhi/rhi.h"
+#if defined(__EMSCRIPTEN__)
+#include <emscripten/emscripten.h>
+#else
 #define GLFW_EXPOSE_NATIVE_WIN32
 #include <GLFW/glfw3.h>
 #include <GLFW/glfw3native.h>
+#endif
+#include <GLFW/glfw3.h>
 #include "imgui.h"
 #include "importer/import.h"
 #include "imgui_backend.h"
 #include "renderer/structs.h"
 #include <glm/gtc/matrix_transform.hpp>
 
+#if defined(__EMSCRIPTEN__)
+constexpr int kMaxRenderWidth = 3840;
+constexpr int kMaxRenderHeight = 2160;
+
+EM_JS(int, ComputeWebRenderSizeJS, (int* outHeight, int maxWidth, int maxHeight), {
+    var dpr = window.devicePixelRatio || 1;
+    var winW = window.innerWidth || 1280;
+    var winH = window.innerHeight || 720;
+    var scale = Math.min(dpr, maxWidth / winW, maxHeight / winH);
+    var renderW = Math.max(1, Math.round(winW * scale));
+    var renderH = Math.max(1, Math.round(winH * scale));
+    HEAP32[outHeight >> 2] = renderH;
+    return renderW;
+});
+
+EM_JS(void, ApplyWebCanvasSizeJS, (int renderW, int renderH, int* outCssWidth, int* outCssHeight), {
+    var canvas = document.getElementById('canvas');
+    if (!canvas) {
+        return;
+    }
+    if (canvas.width !== renderW) {
+        canvas.width = renderW;
+    }
+    if (canvas.height !== renderH) {
+        canvas.height = renderH;
+    }
+    var winW = window.innerWidth || renderW;
+    var winH = window.innerHeight || renderH;
+    var fit = Math.min(winW / renderW, winH / renderH);
+    var cssW = Math.max(1, Math.floor(renderW * fit));
+    var cssH = Math.max(1, Math.floor(renderH * fit));
+    canvas.style.setProperty('width', cssW + 'px', 'important');
+    canvas.style.setProperty('height', cssH + 'px', 'important');
+    HEAP32[outCssWidth >> 2] = cssW;
+    HEAP32[outCssHeight >> 2] = cssH;
+});
+
+// Status overlay: shows the frame counter so a headless run can be checked.
+EM_JS(void, SetWebStatusJS, (const char* text), {
+    var status = document.getElementById('status');
+    if (status) {
+        status.textContent = UTF8ToString(text);
+    }
+});
+
+struct WebRenderSize
+{
+    int width = 1280;
+    int height = 720;
+};
+
+WebRenderSize ComputeWebRenderSize()
+{
+    int height = 0;
+    WebRenderSize size;
+    size.width = ComputeWebRenderSizeJS(&height, kMaxRenderWidth, kMaxRenderHeight);
+    size.height = height;
+    return size;
+}
+
+void ApplyWebCanvasSize(int width, int height, int* cssWidth, int* cssHeight)
+{
+    ApplyWebCanvasSizeJS(width, height, cssWidth, cssHeight);
+}
+
+void SetWebStatus(const std::string& text)
+{
+    SetWebStatusJS(text.c_str());
+}
+#endif
+
+static std::function<void()> g_renderFrame;
+
+#if defined(__EMSCRIPTEN__)
+extern "C" EMSCRIPTEN_KEEPALIVE void newRendererWebFrame()
+{
+    if (g_renderFrame) {
+        g_renderFrame();
+    }
+}
+
+EM_JS(void, StartWebFrameLoop, (), {
+    function tick() {
+        var frame = Module['_newRendererWebFrame'];
+        if (frame) {
+            frame();
+        }
+        requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+});
+#endif
 
 int main()
 {
+#if defined(__EMSCRIPTEN__)
+    // Progress marker in the page (also visible in headless runs).
+    auto setStatus = [](const std::string& text) { SetWebStatus(text); };
+    setStatus("starting");
+#else
+    auto setStatus = [](const std::string&) {};
+#endif
 
 #ifdef RHI_SHADER_DIR
     const std::filesystem::path shaderDir(RHI_SHADER_DIR);
@@ -38,6 +143,7 @@ int main()
 #endif
 
     RHI rhi;
+    setStatus("initializing rhi");
     if (!rhi.Initialize()) {
         std::cerr << "Failed to initialize RHI.\n";
         return 1;
@@ -50,12 +156,31 @@ int main()
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
     GLFWwindow* window;
 
+    int w = 0;
+    int h = 0;
+    int fbw = 0;
+    int fbh = 0;
+
+#if defined(__EMSCRIPTEN__)
+    const WebRenderSize renderSize = ComputeWebRenderSize();
+    w = renderSize.width;
+    h = renderSize.height;
+    fbw = w;
+    fbh = h;
+    window = glfwCreateWindow(w, h, "Renderer", NULL, NULL);
+#else
     window = glfwCreateWindow(2560, 1440, "Renderer", NULL, NULL);
+#endif
 
     if (!window) {
         glfwTerminate();
         return -1;
     }
+
+#if !defined(__EMSCRIPTEN__)
+    glfwGetWindowSize(window, &w, &h);
+    glfwGetFramebufferSize(window, &fbw, &fbh);
+#endif
 
     rhi::ShaderSource vsSource;
     vsSource.path = shaderDir / "sponza.vert.hlsl";
@@ -125,18 +250,23 @@ int main()
     auto pipeline = rhi.CreateGraphicsPipeline(pipelineDesc);
 
     rhi::SurfaceDesc surfaceDesc;
+#if defined(__EMSCRIPTEN__)
+    surfaceDesc.window = {
+        rhi::NativeWindowType::Canvas,
+        nullptr,
+        nullptr,
+        "#canvas",
+    };
+#else
     surfaceDesc.window = {
         rhi::NativeWindowType::Win32,
         glfwGetWin32Window(window),
         GetModuleHandle(nullptr),
     };
+#endif
 
+    setStatus("creating surface");
     rhi::SurfaceHandle surface = rhi.CreateSurface(surfaceDesc);
-
-    int w, h;
-    glfwGetWindowSize(window, &w, &h);
-    int fbw, fbh;
-    glfwGetFramebufferSize(window, &fbw, &fbh);
 
     rhi::SwapchainDesc swapchainDesc;
     swapchainDesc.surface = surface;
@@ -144,6 +274,7 @@ int main()
     swapchainDesc.height = h;
     swapchainDesc.format = rhi::TextureFormat::RGBA8Unorm;
 
+    setStatus("creating swapchain");
     auto swapchain = rhi.CreateSwapchain(swapchainDesc);
 
     ImGuiRenderer imgui;
@@ -180,6 +311,7 @@ int main()
     sceneColorViewDesc.format = rhi::TextureFormat::RGBA16Float;
     const rhi::TextureViewHandle sceneColorView = rhi.CreateTextureView(sceneColorViewDesc, sceneColorTexture);
 
+    setStatus("loading model");
     ModelData model = loadModel(rhi, (modelDir / "sponza/Sponza.gltf").string());
 
     // default texture fallbacks
@@ -357,7 +489,6 @@ int main()
     shadowMapDesc.arrayLayers = MAX_SHADOWS;
     rhi::TextureHandle shadowMapTexture = rhi.CreateTexture(shadowMapDesc);
 
-    // single-layer views: the render target for each light's depth pass
     std::vector<rhi::TextureViewHandle> shadowLayerViews;
     for (uint32_t s = 0; s < MAX_SHADOWS; ++s) {
         rhi::TextureViewDesc layerViewDesc;
@@ -847,12 +978,24 @@ int main()
     bool enableBloom = true;
     bool lastEnableBloom = enableBloom;
 
+    setStatus("ready");
     bool mouseLook = false;
     double lastMouseX = 0.0;
     double lastMouseY = 0.0;
 
-    while (!glfwWindowShouldClose(window)) {
+    auto renderFrame = [&]() {
         auto frameStart = std::chrono::steady_clock::now();
+#if defined(__EMSCRIPTEN__)
+        int cssWidth = 0;
+        int cssHeight = 0;
+        ApplyWebCanvasSize(w, h, &cssWidth, &cssHeight);
+        imgui.SetCanvasSize(static_cast<std::uint32_t>(cssWidth),
+                             static_cast<std::uint32_t>(cssHeight));
+        static std::uint64_t frameCounter = 0;
+        if ((++frameCounter % 60) == 1) {
+            SetWebStatus("running - " + std::to_string(frameCounter) + " frames");
+        }
+#endif
         const double deltaTime = std::chrono::duration<double>(
             frameStart - lastFrameTime).count();
         lastFrameTime = frameStart;
@@ -862,7 +1005,7 @@ int main()
         if (acquired.status != rhi::AcquireStatus::Success
             && acquired.status != rhi::AcquireStatus::Suboptimal
         ) {
-            continue;
+            return;
         }
 
         auto cmd = rhi.BeginCommandList();
@@ -1068,13 +1211,26 @@ int main()
         const bool lookHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
         if (lookHeld && !mouseLook) {
             mouseLook = true;
+#if defined(__EMSCRIPTEN__)
+            // No pointer lock on the web: locking hides the mouse pointer
+            // and only Escape brings it back. The camera follows the mouse
+            // while the button is held, with the pointer left where it is.
+            double startX = 0.0;
+            double startY = 0.0;
+            glfwGetCursorPos(window, &startX, &startY);
+            lastMouseX = startX;
+            lastMouseY = startY;
+#else
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             glfwSetCursorPos(window, w * 0.5, h * 0.5);
             lastMouseX = w * 0.5;
             lastMouseY = h * 0.5;
+#endif
         } else if (!lookHeld && mouseLook) {
             mouseLook = false;
+#if !defined(__EMSCRIPTEN__)
             glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+#endif
         }
 
         if (mouseLook) {
@@ -1085,9 +1241,14 @@ int main()
             cameraPitch -= static_cast<float>(mouseY - lastMouseY) * 0.12f;
             cameraPitch = glm::clamp(cameraPitch, -89.0f, 89.0f);
 
+#if defined(__EMSCRIPTEN__)
+            lastMouseX = mouseX;
+            lastMouseY = mouseY;
+#else
             glfwSetCursorPos(window, w * 0.5, h * 0.5);
             lastMouseX = w * 0.5;
             lastMouseY = h * 0.5;
+#endif
         }
 
         float moveSpeed = 4.0f * static_cast<float>(deltaTime);
@@ -1119,7 +1280,19 @@ int main()
         // the AO depth prepass renders from the same camera
         AOPrepassData.lightViewProjMatrix = cameraData.viewProjMatrix;
         rhi.WriteBuffer(AOCameraBuffer, &AOPrepassData, sizeof(ShadowPrepassUBO));
+    };
+
+#if defined(__EMSCRIPTEN__)
+    g_renderFrame = renderFrame;
+    StartWebFrameLoop();
+    for (;;) {
+        emscripten_sleep(1000);
     }
+#else
+    while (!glfwWindowShouldClose(window)) {
+        renderFrame();
+    }
+#endif
 
     imgui.Shutdown(rhi);
     glfwTerminate();

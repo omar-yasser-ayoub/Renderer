@@ -13,7 +13,9 @@
 
 #include <algorithm>
 #include <cstring>
+
 #include <iostream>
+#include <GLFW/glfw3.h>
 
 struct ImGuiTransformUBO
 {
@@ -28,6 +30,7 @@ bool ImGuiRenderer::Init(RHI& rhi, GLFWwindow* window,
                          const rhi::SwapchainHandle& swapchain)
 {
     m_Rhi = &rhi;
+    m_Window = window;
     m_Swapchain = swapchain;
 
     IMGUI_CHECKVERSION();
@@ -176,12 +179,30 @@ bool ImGuiRenderer::Init(RHI& rhi, GLFWwindow* window,
     return true;
 }
 
+void ImGuiRenderer::SetCanvasSize(std::uint32_t width, std::uint32_t height)
+{
+    m_CanvasWidth = width;
+    m_CanvasHeight = height;
+}
+
 void ImGuiRenderer::NewFrame(double deltaTimeSeconds, std::uint32_t frameWidth,
                               std::uint32_t frameHeight)
 {
     ImGui::GetIO().DeltaTime =
         std::max(static_cast<float>(deltaTimeSeconds), 1.0f / 2000.0f);
     ImGui_ImplGlfw_NewFrame();
+    if (m_CanvasWidth > 0 && m_CanvasHeight > 0 &&
+        (m_CanvasWidth != frameWidth || m_CanvasHeight != frameHeight)) {
+        double mouseX = 0.0;
+        double mouseY = 0.0;
+        glfwGetCursorPos(m_Window, &mouseX, &mouseY);
+        ImGui::GetIO().AddMousePosEvent(
+            static_cast<float>(mouseX) * static_cast<float>(frameWidth) /
+                static_cast<float>(m_CanvasWidth),
+            static_cast<float>(mouseY) * static_cast<float>(frameHeight) /
+                static_cast<float>(m_CanvasHeight));
+    }
+
     ImGui::GetIO().DisplaySize = ImVec2(
         static_cast<float>(frameWidth), static_cast<float>(frameHeight));
     ImGui::GetIO().DisplayFramebufferScale = ImVec2(1.0f, 1.0f);

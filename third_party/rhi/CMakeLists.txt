@@ -20,15 +20,26 @@ function(rhi_add_shaders target source_dir)
   set(copy_target "${target}_shaders")
   if(NOT TARGET ${copy_target})
     set(shader_outputs)
+    # On the web the shaders are embedded into the wasm and mounted from the
+    # in-memory filesystem, so the runtime paths differ from the build tree.
+    if(EMSCRIPTEN)
+      set(runtime_shader_dir "/shaders")
+      set(runtime_shader_tools_dir "/shader_tools")
+    else()
+      set(runtime_shader_dir "${binary_dir}")
+      set(runtime_shader_tools_dir "${CMAKE_CURRENT_BINARY_DIR}/shader_tools")
+    endif()
 
     if(RHI_BACKEND STREQUAL "WEBGPU")
-      if(WIN32)
+      # The shader tools run on the build host, not on the target platform:
+      # a cross build (e.g. Emscripten) still uses the host's DXC and Tint.
+      if(CMAKE_HOST_WIN32)
         set(dxc_exe "${DXC_ROOT}/bin/${DXC_ARCH}/dxc.exe")
         # FUNCTION_LIST_DIR, not SOURCE_DIR: this function runs in the
         # caller's scope, which is a different project when consumed via
         # add_subdirectory. Same reason DXC_ROOT/DXC_ARCH are cache vars.
         set(tint_exe "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/src/third_party/tint/tint.exe")
-      elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
         set(RHI_TINT_EXE "RHI_TINT_EXE-NOTFOUND" CACHE FILEPATH "Tint executable for shaders (build from Dawn sources)")
         if(NOT EXISTS "${RHI_TINT_EXE}")
           message(FATAL_ERROR "WebGPU shader compilation needs Tint at RHI_TINT_EXE=${RHI_TINT_EXE}")
@@ -84,6 +95,11 @@ function(rhi_add_shaders target source_dir)
           VERBATIM
         )
         list(APPEND shader_outputs "${wgsl_output}" "${reflection_output}")
+        if(EMSCRIPTEN)
+          list(APPEND shader_embed_files
+            "${wgsl_output}@${runtime_shader_dir}/${shader_stem}.wgsl"
+            "${spirv_output}@${runtime_shader_tools_dir}/${shader_stem}.spv")
+        endif()
       endforeach()
     else()
       foreach(shader IN LISTS shader_sources)
@@ -109,7 +125,14 @@ function(rhi_add_shaders target source_dir)
 
   add_dependencies(${target} ${copy_target})
   target_compile_definitions(${target}
-    PRIVATE RHI_SHADER_DIR=\"${binary_dir}\")
+    PRIVATE RHI_SHADER_DIR=\"${runtime_shader_dir}\")
+  if(EMSCRIPTEN AND shader_embed_files)
+    # The compiled shaders are embedded in the wasm and unpacked into the
+    # in-memory filesystem before main() runs. The caller turns the list
+    # into a link response file: the full list of embed options is too long
+    # for the Windows command line.
+    set(RHI_SHADER_EMBED_FILES "${shader_embed_files}" PARENT_SCOPE)
+  endif()
 endfunction()
 
 # Backwards-compatible wrapper for the RHI's own shaders.
@@ -125,25 +148,31 @@ target_include_directories(rhi
 )
 
 set(DXC_ROOT "${CMAKE_CURRENT_LIST_DIR}/src/third_party/dxc" CACHE PATH "DXC SDK root")
-if(WIN32)
+if(CMAKE_HOST_WIN32)
+  # The DXC tools run on the build host: a cross build (e.g. Emscripten on
+  # Windows) still uses the host's x64 DXC.
   if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     set(DXC_ARCH x64 CACHE INTERNAL "DXC binary architecture")
   else()
     set(DXC_ARCH x86 CACHE INTERNAL "DXC binary architecture")
   endif()
 
-  add_library(dxc SHARED IMPORTED GLOBAL)
-  set_target_properties(dxc PROPERTIES
-    IMPORTED_IMPLIB "${DXC_ROOT}/lib/${DXC_ARCH}/dxcompiler.lib"
-    IMPORTED_LOCATION "${DXC_ROOT}/bin/${DXC_ARCH}/dxcompiler.dll"
-    INTERFACE_INCLUDE_DIRECTORIES "${DXC_ROOT}/inc"
-  )
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  add_library(dxc SHARED IMPORTED GLOBAL)
-  set_target_properties(dxc PROPERTIES
-    IMPORTED_LOCATION "${DXC_ROOT}/lib/linux-x64/libdxcompiler.so"
-    INTERFACE_INCLUDE_DIRECTORIES "${DXC_ROOT}/inc"
-  )
+  if(NOT EMSCRIPTEN)
+    add_library(dxc SHARED IMPORTED GLOBAL)
+    set_target_properties(dxc PROPERTIES
+      IMPORTED_IMPLIB "${DXC_ROOT}/lib/${DXC_ARCH}/dxcompiler.lib"
+      IMPORTED_LOCATION "${DXC_ROOT}/bin/${DXC_ARCH}/dxcompiler.dll"
+      INTERFACE_INCLUDE_DIRECTORIES "${DXC_ROOT}/inc"
+    )
+  endif()
+elseif(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
+  if(NOT EMSCRIPTEN)
+    add_library(dxc SHARED IMPORTED GLOBAL)
+    set_target_properties(dxc PROPERTIES
+      IMPORTED_LOCATION "${DXC_ROOT}/lib/linux-x64/libdxcompiler.so"
+      INTERFACE_INCLUDE_DIRECTORIES "${DXC_ROOT}/inc"
+    )
+  endif()
 endif()
 
 function(copy_dxc_runtime target)
@@ -226,9 +255,6 @@ elseif(RHI_BACKEND STREQUAL "DX12")
             RHI_DX12
     )
 elseif(RHI_BACKEND STREQUAL "WEBGPU")
-  set(DAWN_SDK_ROOT "C:/Dawn/SDK" CACHE PATH "Path to Dawn SDK")
-  find_package(Threads REQUIRED)
-  find_package(Dawn REQUIRED PATHS ${DAWN_SDK_ROOT})
   target_sources(rhi
             PRIVATE
                 src/rhi/webgpu/wgpurhi.cpp
@@ -244,14 +270,33 @@ elseif(RHI_BACKEND STREQUAL "WEBGPU")
                 src/rhi/webgpu/wgpurenderpass.cpp
                 src/third_party/spirv-reflect/spirv_reflect.cpp
         )
-  target_link_libraries(rhi
-            PUBLIC
-                dawn::webgpu_dawn
+  if(EMSCRIPTEN)
+    # Web build: Dawn's own webgpu.h/webgpu_cpp.h implementation on top of the
+    # browser's WebGPU API (the emdawnwebgpu Emscripten port). Same C++ API as
+    # the native Dawn build, so the same sources compile unchanged.
+    message(STATUS "Configuring RHI for WebGPU (web / Emscripten)")
+    target_compile_options(rhi PUBLIC --use-port=emdawnwebgpu)
+    target_link_options(rhi PUBLIC --use-port=emdawnwebgpu)
+    target_compile_definitions(rhi
+      PUBLIC
+        RHI_WEBGPU
+        RHI_WEBGPU_WEB
+    )
+  else()
+    message(STATUS "Configuring RHI for WebGPU (native / Dawn)")
+    set(DAWN_SDK_ROOT "C:/Dawn/SDK" CACHE PATH "Path to Dawn SDK")
+    find_package(Threads REQUIRED)
+    find_package(Dawn REQUIRED PATHS ${DAWN_SDK_ROOT})
+    target_link_libraries(rhi
+        PUBLIC
+            dawn::webgpu_dawn
         )
-  target_compile_definitions(rhi
-            PUBLIC
-                RHI_WEBGPU
-        )
+    target_compile_definitions(rhi
+        PUBLIC
+            RHI_WEBGPU
+    )
+  endif()
+
 else()
   message(FATAL_ERROR "Unknown RHI backend: ${RHI_BACKEND}")
 endif()

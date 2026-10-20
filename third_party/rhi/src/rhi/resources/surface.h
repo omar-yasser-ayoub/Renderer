@@ -14,6 +14,7 @@ namespace rhi
         Wayland,
         MetalLayer,
         Android,
+        Canvas,
     };
 
     struct NativeWindow
@@ -21,6 +22,7 @@ namespace rhi
         NativeWindowType type = NativeWindowType::Unknown;
         void* handle = nullptr;
         void* display = nullptr;
+        const char* canvasSelector = nullptr;
     };
 
     struct SurfaceDesc

@@ -1,11 +1,11 @@
 #include "rhi/webgpu/wgpurhi.h"
 
+#include <cstring>
 #include <iostream>
 
 rhi::SurfaceHandle WebGPURHI::CreateSurface(const rhi::SurfaceDesc& desc)
 {
-    if (!m_Instance || desc.window.type == rhi::NativeWindowType::Unknown ||
-        desc.window.handle == nullptr) {
+    if (!m_Instance || desc.window.type == rhi::NativeWindowType::Unknown) {
         return {};
     }
 
@@ -18,9 +18,15 @@ rhi::SurfaceHandle WebGPURHI::CreateSurface(const rhi::SurfaceDesc& desc)
     wgpu::SurfaceSourceXCBWindow xcbSource{};
     wgpu::SurfaceSourceWaylandSurface waylandSource{};
 #endif
+#if defined(__EMSCRIPTEN__)
+    wgpu::EmscriptenSurfaceSourceCanvasHTMLSelector canvasSource{};
+#endif
     switch (desc.window.type) {
 #if defined(_WIN32)
     case rhi::NativeWindowType::Win32:
+        if (desc.window.handle == nullptr) {
+            return {};
+        }
         windowsSource.hinstance = desc.window.display;
         windowsSource.hwnd = desc.window.handle;
         surfaceDesc.nextInChain = &windowsSource;
@@ -44,6 +50,20 @@ rhi::SurfaceHandle WebGPURHI::CreateSurface(const rhi::SurfaceDesc& desc)
         waylandSource.surface = desc.window.handle;
         surfaceDesc.nextInChain = &waylandSource;
         break;
+#endif
+#if defined(__EMSCRIPTEN__)
+    case rhi::NativeWindowType::Canvas: {
+        // The browser resolves the selector to a canvas element and takes a
+        // "webgpu" context on it. The selector must be a NUL-terminated
+        // string: the port reads it as a plain C string.
+        const char* selector = desc.window.canvasSelector;
+        if (selector == nullptr) {
+            return {};
+        }
+        canvasSource.selector = wgpu::StringView(selector, std::strlen(selector));
+        surfaceDesc.nextInChain = &canvasSource;
+        break;
+    }
 #endif
     default:
         return {};

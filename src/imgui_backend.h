@@ -20,6 +20,8 @@ public:
     void NewFrame(double deltaTimeSeconds, std::uint32_t frameWidth,
                   std::uint32_t frameHeight);
 
+    void SetCanvasSize(std::uint32_t width, std::uint32_t height);
+
     void Render(RHI& rhi, rhi::CommandListHandle cmd, std::uint32_t swapchainImageIndex);
 
     void Shutdown(RHI& rhi);
@@ -29,6 +31,7 @@ private:
     static constexpr std::size_t kVertexStride = 20;
 
     RHI* m_Rhi = nullptr;
+    GLFWwindow* m_Window = nullptr;
     rhi::SwapchainHandle m_Swapchain{};
 
     rhi::ShaderModuleHandle m_VertexShader, m_FragmentShader;
@@ -51,6 +54,7 @@ private:
     std::size_t m_RingSlot = 0;
 
     std::uint32_t m_FrameWidth = 0, m_FrameHeight = 0;
+    std::uint32_t m_CanvasWidth = 0, m_CanvasHeight = 0;
 
     std::vector<std::size_t> m_ListVertexStarts;
     std::vector<std::size_t> m_ListIndexStarts; // in indices

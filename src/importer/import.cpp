@@ -17,7 +17,11 @@ ModelData loadModel(RHI& rhi, const std::string& path)
 
     fastgltf::Parser parser;
 
+#if defined(FASTGLTF_HAS_MEMORY_MAPPED_FILE)
     auto file = fastgltf::MappedGltfFile::FromPath(path);
+#else
+    auto file = fastgltf::GltfDataBuffer::FromPath(path);
+#endif
     if (!file) {
         return res;
     }
