@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <iostream>
 
@@ -410,9 +411,12 @@ int main()
     shadowSamplerEntry.sampler = shadowSampler;
     cameraBindGroupDesc.entries.push_back(shadowSamplerEntry);
 
-    const glm::vec3 cameraPos(6.0f, 1.0f, 0.0f);
+    glm::vec3 cameraPos(6.0f, 1.0f, 0.0f);
     const glm::vec3 cameraTarget(-0.5f, 1.0f, -0.3f);
-    const glm::mat4 view = glm::lookAt(
+    const glm::vec3 cameraFront = glm::normalize(cameraTarget - cameraPos);
+    float cameraYaw = glm::degrees(std::atan2(cameraFront.z, cameraFront.x));
+    float cameraPitch = glm::degrees(std::asin(cameraFront.y));
+    glm::mat4 view = glm::lookAt(
         cameraPos,
         cameraTarget,
         glm::vec3(0.0f, 1.0f, 0.0f));
@@ -692,8 +696,8 @@ int main()
     const rhi::BindGroupHandle AODebugBindGroup = rhi.CreateBindGroup(AODebugBindGroupDesc);
 
     // Bloom
-    const int bloomW = std::max(1, w / 2);
-    const int bloomH = std::max(1, h / 2);
+    const int bloomW = std::max(1, w / 4);
+    const int bloomH = std::max(1, h / 4);
 
     rhi::TextureDesc bloomADesc;
     bloomADesc.width = bloomW;
@@ -746,7 +750,7 @@ int main()
 
     BloomUBO compositeData{};
     compositeData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
-    compositeData.intensity = 2.0f;
+    compositeData.intensity = 1.0f;
     const rhi::BufferHandle compositeUBO = createBloomUBO(compositeData);
 
     rhi::ShaderSource fullscreenVSSource;
@@ -843,6 +847,10 @@ int main()
     bool enableBloom = true;
     bool lastEnableBloom = enableBloom;
 
+    bool mouseLook = false;
+    double lastMouseX = 0.0;
+    double lastMouseY = 0.0;
+
     while (!glfwWindowShouldClose(window)) {
         auto frameStart = std::chrono::steady_clock::now();
         const double deltaTime = std::chrono::duration<double>(
@@ -915,11 +923,11 @@ int main()
             rhi.EndPass(cmd);
         }
 
-        // lighting pass (into the HDR scene target)
+        // lighting pass
         rhi::RenderPassDesc imagepass{};
         imagepass.colors.push_back({
             .view = sceneColorView,
-            .clearColor = {0.0f, 0.0f, 0.0f, 1.0f},
+            .clearColor = {0.18f, 0.34f, 0.62f, 1.0f},
             .clear = true
         });
         imagepass.depth.enabled = true;
@@ -943,12 +951,11 @@ int main()
         rhi.EndPass(cmd);
 
         if (enableBloom != lastEnableBloom) {
-            compositeData.intensity = enableBloom ? 2.0f : 0.0f;
+            compositeData.intensity = enableBloom ? 1.0f : 0.0f;
             rhi.WriteBuffer(compositeUBO, &compositeData, sizeof(BloomUBO));
             lastEnableBloom = enableBloom;
         }
 
-        // bloom: bright pass into half-res A
         {
             rhi::RenderPassDesc pass{};
             pass.colors.push_back({
@@ -1047,6 +1054,7 @@ int main()
             ImGui::Checkbox("Enable AO", &enableAO);
             ImGui::Checkbox("Show AO texture", &showAO);
             ImGui::Checkbox("Enable Bloom", &enableBloom);
+            ImGui::Text("RMB: look | WASD: move | Q/E: down/up | Shift: fast");
         }
         ImGui::End();
 
@@ -1055,6 +1063,62 @@ int main()
         rhi.Submit({&cmd, 1});
         rhi.Present(swapchain);
         glfwPollEvents();
+
+        // right mouse button captures the cursor for free-look
+        const bool lookHeld = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+        if (lookHeld && !mouseLook) {
+            mouseLook = true;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            glfwSetCursorPos(window, w * 0.5, h * 0.5);
+            lastMouseX = w * 0.5;
+            lastMouseY = h * 0.5;
+        } else if (!lookHeld && mouseLook) {
+            mouseLook = false;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
+
+        if (mouseLook) {
+            double mouseX, mouseY;
+            glfwGetCursorPos(window, &mouseX, &mouseY);
+
+            cameraYaw += static_cast<float>(mouseX - lastMouseX) * 0.12f;
+            cameraPitch -= static_cast<float>(mouseY - lastMouseY) * 0.12f;
+            cameraPitch = glm::clamp(cameraPitch, -89.0f, 89.0f);
+
+            glfwSetCursorPos(window, w * 0.5, h * 0.5);
+            lastMouseX = w * 0.5;
+            lastMouseY = h * 0.5;
+        }
+
+        float moveSpeed = 4.0f * static_cast<float>(deltaTime);
+        if (glfwGetKey(window, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS
+            || glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS) {
+            moveSpeed *= 3.0f;
+        }
+
+        glm::vec3 forward;
+        forward.x = std::cos(glm::radians(cameraYaw)) * std::cos(glm::radians(cameraPitch));
+        forward.y = std::sin(glm::radians(cameraPitch));
+        forward.z = std::sin(glm::radians(cameraYaw)) * std::cos(glm::radians(cameraPitch));
+        forward = glm::normalize(forward);
+
+        const glm::vec3 right = glm::normalize(glm::cross(forward, glm::vec3(0.0f, 1.0f, 0.0f)));
+
+        if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) cameraPos += forward * moveSpeed;
+        if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) cameraPos -= forward * moveSpeed;
+        if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) cameraPos += right * moveSpeed;
+        if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) cameraPos -= right * moveSpeed;
+        if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) cameraPos.y += moveSpeed;
+        if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) cameraPos.y -= moveSpeed;
+
+        view = glm::lookAt(cameraPos, cameraPos + forward, glm::vec3(0.0f, 1.0f, 0.0f));
+        cameraData.viewProjMatrix = proj * view;
+        cameraData.position = glm::vec4(cameraPos, 1.0f);
+        rhi.WriteBuffer(cameraUbo, &cameraData, sizeof(CameraUBO));
+
+        // the AO depth prepass renders from the same camera
+        AOPrepassData.lightViewProjMatrix = cameraData.viewProjMatrix;
+        rhi.WriteBuffer(AOCameraBuffer, &AOPrepassData, sizeof(ShadowPrepassUBO));
     }
 
     imgui.Shutdown(rhi);
