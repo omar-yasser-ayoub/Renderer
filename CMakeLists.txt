@@ -140,6 +140,23 @@ if(EMSCRIPTEN)
         target_link_options(${APP_TARGET} PRIVATE "--closure=1")
     endif()
 
+    # Deployment folder: only the three files a static host needs
+    # (html, loader js, wasm). The page is named index.html so that a
+    # static host serves it at the root.
+    add_custom_command(TARGET ${APP_TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/dist"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:${APP_TARGET}>"
+            "${CMAKE_CURRENT_BINARY_DIR}/dist/index.html"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:${APP_TARGET}>.js"
+            "${CMAKE_CURRENT_BINARY_DIR}/dist/"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_BINARY_DIR}/$<TARGET_FILE_BASE_NAME:${APP_TARGET}>.wasm"
+            "${CMAKE_CURRENT_BINARY_DIR}/dist/"
+        COMMENT "Staging the web build in ${CMAKE_CURRENT_BINARY_DIR}/dist"
+    )
+
     # Embed the models in the wasm: the browser has no filesystem, so they
     # are mounted into the in-memory filesystem at startup. The options go
     # into a link response file: the full list is far too long for the

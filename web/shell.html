@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>new_renderer (WebGPU)</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #101014;
+      color: #d0d0d8;
+      font-family: system-ui, sans-serif;
+      overflow: hidden;
+    }
+    #canvas {
+      display: block;
+      margin: 0 auto;
+      background: #000;
+      outline: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #status {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      font-size: 12px;
+      opacity: 0.7;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <!-- The WebGPU surface and the GLFW window both use this canvas. -->
+  <canvas id="canvas" width="1280" height="720" tabindex="-1"></canvas>
+  <div id="status">loading...</div>
+  <script type="text/javascript">
+    var statusElement = document.getElementById('status');
+    var canvasElement = document.getElementById('canvas');
+    var Module = {
+      canvas: canvasElement,
+      onRuntimeInitialized: function () {
+        statusElement.textContent = 'running';
+      }
+    };
+
+    // The right mouse button is the free-look button: keep the browser from
+    // opening its context menu while it is held down.
+    canvasElement.addEventListener('contextmenu', function (event) {
+      event.preventDefault();
+    });
+  </script>
+  {{{ SCRIPT }}}
+</body>
+</html>
