@@ -291,10 +291,23 @@ int main()
 
     LightData lightData{};
 
-    lightData.lights[0].dirRadius = glm::vec4(glm::normalize(glm::vec3(0.0f, -1.0f, 0.0f)), 0.0f);
-    lightData.lights[0].colorIntensity = glm::vec4(1.0f, 0.93f, 0.82f, 3.4f);
+    // editable directional light parameters (exposed in the ImGui panel)
+    float lightYaw = 0.0f;     // degrees, rotation around the Y axis
+    float lightPitch = -90.0f; // degrees, -90 = straight down
+    glm::vec3 lightColor(1.0f, 0.93f, 0.82f);
+    float lightIntensity = 3.4f;
 
     uint32_t lightCount = 1;
+
+    auto lightDirectionFromAngles = [](float yawDeg, float pitchDeg) {
+        return glm::normalize(glm::vec3(
+            std::cos(glm::radians(pitchDeg)) * std::cos(glm::radians(yawDeg)),
+            std::sin(glm::radians(pitchDeg)),
+            std::cos(glm::radians(pitchDeg)) * std::sin(glm::radians(yawDeg))));
+    };
+
+    lightData.lights[0].dirRadius = glm::vec4(lightDirectionFromAngles(lightYaw, lightPitch), 0.0f);
+    lightData.lights[0].colorIntensity = glm::vec4(lightColor, lightIntensity);
 
     auto addPointLight = [&](glm::vec3 position, glm::vec3 color, float intensity, float range) {
         Light& light = lightData.lights[lightCount++];
@@ -312,14 +325,7 @@ int main()
     const float sceneRadius = 40.0f;
     const float lightDistance = 1000.0f;
 
-    ShadowData shadowData{};
-    uint32_t shadowCount = 0;
-    for (uint32_t i = 0; i < lightData.lightCount && shadowCount < MAX_SHADOWS; ++i) {
-        if (lightData.lights[i].posType.w != 0.0f) {
-            continue; // only directional lights cast shadows for now
-        }
-
-        const glm::vec3 lightDir = glm::normalize(glm::vec3(lightData.lights[i].dirRadius));
+    auto shadowMatrixForDir = [&](const glm::vec3& lightDir) {
         const glm::vec3 lightPos = sceneCenter - lightDir * lightDistance;
 
         glm::vec3 up(0.0f, 1.0f, 0.0f);
@@ -333,8 +339,18 @@ int main()
             -sceneRadius, sceneRadius,
             lightDistance - sceneRadius,
             lightDistance + sceneRadius);
+        return lightProj * lightView;
+    };
 
-        shadowData.lightViewProj[shadowCount] = lightProj * lightView;
+    ShadowData shadowData{};
+    uint32_t shadowCount = 0;
+    for (uint32_t i = 0; i < lightData.lightCount && shadowCount < MAX_SHADOWS; ++i) {
+        if (lightData.lights[i].posType.w != 0.0f) {
+            continue; // only directional lights cast shadows for now
+        }
+
+        const glm::vec3 lightDir = glm::normalize(glm::vec3(lightData.lights[i].dirRadius));
+        shadowData.lightViewProj[shadowCount] = shadowMatrixForDir(lightDir);
         lightData.lights[i].shadowIndex = static_cast<int>(shadowCount);
         ++shadowCount;
     }
@@ -395,6 +411,18 @@ int main()
     shadowDataBufferDesc.memoryUsage = rhi::MemoryUsage::CpuToGpu;
     rhi::BufferHandle shadowDataBuffer = rhi.CreateBuffer(shadowDataBufferDesc);
     rhi.WriteBuffer(shadowDataBuffer, &shadowData, sizeof(ShadowData));
+
+    auto applyLightSettings = [&]() {
+        if (lightData.lights[0].posType.w == 0.0f) {
+            const glm::vec3 lightDir = lightDirectionFromAngles(lightYaw, lightPitch);
+            lightData.lights[0].dirRadius = glm::vec4(lightDir, 0.0f);
+            lightData.lights[0].colorIntensity = glm::vec4(lightColor, lightIntensity);
+            shadowData.lightViewProj[0] = shadowMatrixForDir(lightDir);
+            lightData.lights[0].shadowIndex = 0;
+        }
+        rhi.WriteBuffer(lightUbo, &lightData, sizeof(LightData));
+        rhi.WriteBuffer(shadowDataBuffer, &shadowData, sizeof(ShadowData));
+    };
 
     rhi::BindGroupEntry shadowDataEntry;
     shadowDataEntry.binding = 2;
@@ -623,6 +651,10 @@ int main()
     AOData.strength = 1.5f;
     rhi.WriteBuffer(AOUBOBuffer, &AOData, sizeof(AOUBO));
 
+    // editable AO parameters (exposed in the ImGui panel)
+    float aoRadius = AOData.radius;
+    float aoStrength = AOData.strength;
+
     rhi::BindGroupDesc AOBindGroupDesc;
     AOBindGroupDesc.layout = AOBindGroupLayouts[0];
 
@@ -733,10 +765,15 @@ int main()
         return buffer;
     };
 
+    // editable bloom parameters (exposed in the ImGui panel)
+    float bloomThreshold = 0.5f;
+    float bloomKnee = 0.5f;
+    float bloomIntensity = 1.0f;
+
     BloomUBO brightData{};
     brightData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
-    brightData.threshold = 0.5f;
-    brightData.knee = 0.5f;
+    brightData.threshold = bloomThreshold;
+    brightData.knee = bloomKnee;
     brightData.intensity = 1.0f;
     const rhi::BufferHandle brightUBO = createBloomUBO(brightData);
 
@@ -750,7 +787,7 @@ int main()
 
     BloomUBO compositeData{};
     compositeData.texelSize = glm::vec2(1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h));
-    compositeData.intensity = 1.0f;
+    compositeData.intensity = bloomIntensity;
     const rhi::BufferHandle compositeUBO = createBloomUBO(compositeData);
 
     rhi::ShaderSource fullscreenVSSource;
@@ -889,9 +926,14 @@ int main()
 
         if (enableAO != lastEnableAO) {
             // strength 0 makes the pass write 1.0 everywhere, i.e. no occlusion
-            AOData.strength = enableAO ? 1.5f : 0.0f;
+            AOData.strength = enableAO ? aoStrength : 0.0f;
             rhi.WriteBuffer(AOUBOBuffer, &AOData, sizeof(AOUBO));
             lastEnableAO = enableAO;
+        } else if (enableAO
+                   && (AOData.radius != aoRadius || AOData.strength != aoStrength)) {
+            AOData.radius = aoRadius;
+            AOData.strength = aoStrength;
+            rhi.WriteBuffer(AOUBOBuffer, &AOData, sizeof(AOUBO));
         }
 
         // The AO Pass itself
@@ -951,9 +993,18 @@ int main()
         rhi.EndPass(cmd);
 
         if (enableBloom != lastEnableBloom) {
-            compositeData.intensity = enableBloom ? 1.0f : 0.0f;
+            compositeData.intensity = enableBloom ? bloomIntensity : 0.0f;
             rhi.WriteBuffer(compositeUBO, &compositeData, sizeof(BloomUBO));
             lastEnableBloom = enableBloom;
+        }
+        if (brightData.threshold != bloomThreshold || brightData.knee != bloomKnee) {
+            brightData.threshold = bloomThreshold;
+            brightData.knee = bloomKnee;
+            rhi.WriteBuffer(brightUBO, &brightData, sizeof(BloomUBO));
+        }
+        if (enableBloom && compositeData.intensity != bloomIntensity) {
+            compositeData.intensity = bloomIntensity;
+            rhi.WriteBuffer(compositeUBO, &compositeData, sizeof(BloomUBO));
         }
 
         {
@@ -1052,8 +1103,26 @@ int main()
             ImGui::Text("Frame time: %.2f ms (%.1f FPS)", deltaTime * 1000.0, deltaTime > 0.0 ? 1.0 / deltaTime : 0.0);
             ImGui::Text("Lights: %d | Shadows: %d", lightCount, shadowCount);
             ImGui::Checkbox("Enable AO", &enableAO);
+            ImGui::SliderFloat("AO radius", &aoRadius, 0.0f, 4.0f);
+            ImGui::SliderFloat("AO strength", &aoStrength, 0.0f, 5.0f);
             ImGui::Checkbox("Show AO texture", &showAO);
+
+            ImGui::Separator();
             ImGui::Checkbox("Enable Bloom", &enableBloom);
+            ImGui::SliderFloat("Bloom threshold", &bloomThreshold, 0.0f, 2.0f);
+            ImGui::SliderFloat("Bloom knee", &bloomKnee, 0.0f, 1.0f);
+            ImGui::SliderFloat("Bloom intensity", &bloomIntensity, 0.0f, 4.0f);
+
+            ImGui::Separator();
+            ImGui::Text("Directional light");
+            bool lightChanged = false;
+            lightChanged |= ImGui::SliderFloat("Light yaw", &lightYaw, -180.0f, 180.0f, "%.0f deg");
+            lightChanged |= ImGui::SliderFloat("Light pitch", &lightPitch, -90.0f, 90.0f, "%.0f deg");
+            lightChanged |= ImGui::ColorEdit3("Light color", &lightColor.x);
+            lightChanged |= ImGui::SliderFloat("Light intensity", &lightIntensity, 0.0f, 10.0f);
+            if (lightChanged) {
+                applyLightSettings();
+            }
             ImGui::Text("RMB: look | WASD: move | Q/E: down/up | Shift: fast");
         }
         ImGui::End();
