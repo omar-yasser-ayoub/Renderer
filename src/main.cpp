@@ -316,7 +316,7 @@ int main()
         light.colorIntensity = glm::vec4(color, intensity);
     };
 
-    addPointLight(glm::vec3( 0.0f, 3.0f,  0.0f), glm::vec3(0.3f, 0.20f, 0.85f), 1.0f, 16.0f); // hot pink
+    addPointLight(glm::vec3( 0.0f, 3.0f,  0.0f), glm::vec3(1.0f, 1.0f, 1.0f), 0.05f, 16.0f); // hot pink
 
     lightData.lightCount = lightCount;
 

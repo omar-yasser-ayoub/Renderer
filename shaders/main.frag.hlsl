@@ -145,8 +145,12 @@ float4 main(PSInput input) : SV_Target
     // Sample normal
     float3 sampledNormal = NormalMap.Sample(NormalSamp, input.uv).rgb;
 
+    float4 albedoSample = AlbedoMap.Sample(AlbedoSamp, input.uv);
     // Sample albedo
-    float3 albedo = AlbedoMap.Sample(AlbedoSamp, input.uv).rgb * baseColor.rgb;
+
+    float3 alpha = albedoSample.a * baseColor.a;
+
+    float3 albedo = albedoSample.rgb * baseColor.rgb;
 
     // Sample roughness/metallicness
     float3 rm = RmMap.Sample(RmSamp, input.uv).rgb;
@@ -160,6 +164,8 @@ float4 main(PSInput input) : SV_Target
 
     // Calculate the final world-space normal vector accounting for the TBN matrix
     float3 normal = CalculateNormal(input, sampledNormal);
+
+    clip(alpha - 0.5);
 
     float3 viewDir = normalize(cameraPosition.xyz - input.worldPos);
 
