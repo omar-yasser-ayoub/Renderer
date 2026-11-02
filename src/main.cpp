@@ -58,13 +58,13 @@ int main()
     }
 
     rhi::ShaderSource vsSource;
-    vsSource.path = shaderDir / "sponza.vert.hlsl";
+    vsSource.path = shaderDir / "main.vert.hlsl";
     vsSource.stage = rhi::ShaderStageFlags::Vertex;
     vsSource.entryPoint = "main";
     const rhi::ShaderModuleHandle vs = rhi.CompileShader(vsSource);
 
     rhi::ShaderSource fsSource;
-    fsSource.path = shaderDir / "sponza.frag.hlsl";
+    fsSource.path = shaderDir / "main.frag.hlsl";
     fsSource.stage = rhi::ShaderStageFlags::Fragment;
     fsSource.entryPoint = "main";
     const rhi::ShaderModuleHandle fs = rhi.CompileShader(fsSource);
@@ -311,7 +311,7 @@ int main()
 
     auto addPointLight = [&](glm::vec3 position, glm::vec3 color, float intensity, float range) {
         Light& light = lightData.lights[lightCount++];
-        light.posType        = glm::vec4(position, 1.0f);
+        light.posType        = glm::vec4(position, 2.0f);
         light.dirRadius      = glm::vec4(0.0f, 0.0f, 0.0f, range);
         light.colorIntensity = glm::vec4(color, intensity);
     };
