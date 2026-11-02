@@ -412,6 +412,8 @@ int main()
     rhi::BufferHandle shadowDataBuffer = rhi.CreateBuffer(shadowDataBufferDesc);
     rhi.WriteBuffer(shadowDataBuffer, &shadowData, sizeof(ShadowData));
 
+    std::vector<rhi::BufferHandle> shadowPrepassBuffers;
+
     auto applyLightSettings = [&]() {
         if (lightData.lights[0].posType.w == 0.0f) {
             const glm::vec3 lightDir = lightDirectionFromAngles(lightYaw, lightPitch);
@@ -419,6 +421,9 @@ int main()
             lightData.lights[0].colorIntensity = glm::vec4(lightColor, lightIntensity);
             shadowData.lightViewProj[0] = shadowMatrixForDir(lightDir);
             lightData.lights[0].shadowIndex = 0;
+            ShadowPrepassUBO p{};
+            p.lightViewProjMatrix = shadowData.lightViewProj[0];
+            rhi.WriteBuffer(shadowPrepassBuffers[0], &p, sizeof(p));
         }
         rhi.WriteBuffer(lightUbo, &lightData, sizeof(LightData));
         rhi.WriteBuffer(shadowDataBuffer, &shadowData, sizeof(ShadowData));
@@ -548,6 +553,8 @@ int main()
         shadowPrepassBindGroupDesc.entries.push_back(shadowPrepassEntry);
         shadowPrepassBindGroupDesc.layout = prepassBindGroupLayouts[0];
         shadowPrepassBindGroups.push_back(rhi.CreateBindGroup(shadowPrepassBindGroupDesc));
+
+        shadowPrepassBuffers.push_back(shadowPrepassBuffer);
     }
 
     // AO depth prepass
