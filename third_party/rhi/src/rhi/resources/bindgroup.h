@@ -51,7 +51,10 @@ namespace rhi {
                         // Unfilterable only survives if NO stage filters it.
                         existing.unfilterableSampled =
                             existing.unfilterableSampled && binding.unfilterableSampled;
-                        existing.arrayed = existing.arrayed || binding.arrayed;
+                        // View dimension is an enum, so it can't be OR-ed.
+                        // Tex2D is the default; adopt the first specific one.
+                        if (existing.viewDimension == TextureViewDimension::Tex2D)
+                            existing.viewDimension = binding.viewDimension;
                         merged = true;
                         break;
                     }

@@ -543,7 +543,29 @@ rhi::ShaderReflection WebGPURHI::ParseReflection(
         if (binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER ||
             binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_SAMPLED_IMAGE ||
             binding->descriptor_type == SPV_REFLECT_DESCRIPTOR_TYPE_STORAGE_IMAGE) {
-            bindingResult.arrayed = binding->image.arrayed != 0;
+            const bool arrayed = binding->image.arrayed != 0;
+            switch (binding->image.dim) {
+            case SpvDim1D:
+                bindingResult.viewDimension = arrayed
+                    ? rhi::TextureViewDimension::Tex1DArray
+                    : rhi::TextureViewDimension::Tex1D;
+                break;
+            case SpvDim2D:
+                bindingResult.viewDimension = arrayed
+                    ? rhi::TextureViewDimension::Tex2DArray
+                    : rhi::TextureViewDimension::Tex2D;
+                break;
+            case SpvDim3D:
+                bindingResult.viewDimension = rhi::TextureViewDimension::Tex3D;
+                break;
+            case SpvDimCube:
+                bindingResult.viewDimension = arrayed
+                    ? rhi::TextureViewDimension::TexCubeArray
+                    : rhi::TextureViewDimension::TexCube;
+                break;
+            default:
+                break;
+            }
         }
 
         result.bindings.push_back(bindingResult);

@@ -589,6 +589,40 @@ rhi::ShaderReflection DX12RHI::ParseReflection(
         default:
             continue;
         }
+
+        // DX12 also derives the view type from the bound view, so this is
+        // informational, but keep it consistent with the other backends.
+        if (bindingResult.type == rhi::BindingType::SampledTexture ||
+            bindingResult.type == rhi::BindingType::StorageTexture) {
+            switch (binding.Dimension) {
+            case D3D_SRV_DIMENSION_TEXTURE1D:
+                bindingResult.viewDimension = rhi::TextureViewDimension::Tex1D;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURE1DARRAY:
+                bindingResult.viewDimension = rhi::TextureViewDimension::Tex1DArray;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURE2D:
+            case D3D_SRV_DIMENSION_TEXTURE2DMS:
+                bindingResult.viewDimension = rhi::TextureViewDimension::Tex2D;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURE2DARRAY:
+            case D3D_SRV_DIMENSION_TEXTURE2DMSARRAY:
+                bindingResult.viewDimension = rhi::TextureViewDimension::Tex2DArray;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURE3D:
+                bindingResult.viewDimension = rhi::TextureViewDimension::Tex3D;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURECUBE:
+                bindingResult.viewDimension = rhi::TextureViewDimension::TexCube;
+                break;
+            case D3D_SRV_DIMENSION_TEXTURECUBEARRAY:
+                bindingResult.viewDimension = rhi::TextureViewDimension::TexCubeArray;
+                break;
+            default:
+                break;
+            }
+        }
+
         shaderReflection.bindings.push_back(bindingResult);
     }
 

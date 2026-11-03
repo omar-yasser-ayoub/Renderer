@@ -77,6 +77,16 @@ rhi::TextureViewHandle WebGPURHI::CreateTextureView(const rhi::TextureViewDesc& 
         printf("[RHI] Unsupported texture view dimension for WebGPU\n");
         return rhi::TextureViewHandle{};
     }
+    if (viewDimension == wgpu::TextureViewDimension::Cube ||
+        viewDimension == wgpu::TextureViewDimension::CubeArray) {
+        if (texture.desc.dimension != rhi::TextureDimension::Tex2D ||
+            texture.desc.width != texture.desc.height ||
+            desc.arrayLayers == 0 || desc.arrayLayers % 6 != 0) {
+            printf("[RHI] Cube views require a square Tex2D texture with an "
+                   "array layer count that is a multiple of 6\n");
+            return rhi::TextureViewHandle{};
+        }
+    }
     wgpu::TextureViewDescriptor viewDesc{};
     viewDesc.baseMipLevel = desc.baseMipLevel;
     viewDesc.baseArrayLayer = desc.baseArrayLayer;

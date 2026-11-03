@@ -23,7 +23,10 @@ rhi::TextureHandle VulkanRHI::CreateTexture(const rhi::TextureDesc& desc) {
     imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     imageInfo.flags = 0;
-    if (desc.dimension == rhi::TextureDimension::Tex2D && desc.arrayLayers >= 6) {
+
+    if (desc.dimension == rhi::TextureDimension::Tex2D &&
+        desc.width == desc.height &&
+        desc.arrayLayers % 6 == 0) {
         imageInfo.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     }
 

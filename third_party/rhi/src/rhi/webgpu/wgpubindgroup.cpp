@@ -68,21 +68,30 @@ rhi::BindGroupLayoutHandle WebGPURHI::CreateBindGroupLayout(const rhi::BindGroup
                 : (shaderBinding.unfilterableSampled
                     ? wgpu::TextureSampleType::UnfilterableFloat
                     : wgpu::TextureSampleType::Float);
-            entry.texture.viewDimension = shaderBinding.arrayed
-                ? wgpu::TextureViewDimension::e2DArray
-                : wgpu::TextureViewDimension::e2D;
+            entry.texture.viewDimension =
+                toWebGPU(shaderBinding.viewDimension);
+            if (entry.texture.viewDimension == wgpu::TextureViewDimension::Undefined)
+                entry.texture.viewDimension = wgpu::TextureViewDimension::e2D;
             entry.texture.multisampled = false;
             break;
 
         case rhi::BindingType::StorageTexture:
+        {
             entry.storageTexture.access =
                 wgpu::StorageTextureAccess::ReadWrite;
             entry.storageTexture.format =
                 wgpu::TextureFormat::R32Float;
-            entry.storageTexture.viewDimension = shaderBinding.arrayed
-                ? wgpu::TextureViewDimension::e2DArray
-                : wgpu::TextureViewDimension::e2D;
+            // WebGPU storage textures only exist as 2D, 2D-array or 3D.
+            wgpu::TextureViewDimension storageDim =
+                toWebGPU(shaderBinding.viewDimension);
+            if (storageDim != wgpu::TextureViewDimension::e2D &&
+                storageDim != wgpu::TextureViewDimension::e2DArray &&
+                storageDim != wgpu::TextureViewDimension::e3D) {
+                storageDim = wgpu::TextureViewDimension::e2D;
+            }
+            entry.storageTexture.viewDimension = storageDim;
             break;
+        }
 
         case rhi::BindingType::Sampler:
             entry.sampler.type = shaderBinding.comparison
